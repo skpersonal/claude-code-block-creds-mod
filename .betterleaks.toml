@@ -1,0 +1,8 @@
+title = "block-creds-mod"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "tests/ contains dummy secrets"
+paths = ['''^tests/''']

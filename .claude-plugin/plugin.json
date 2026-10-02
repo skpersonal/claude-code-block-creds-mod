@@ -1,0 +1,45 @@
+{
+  "name": "block-creds",
+  "version": "0.1.0",
+  "description": "Redacts or blocks credentials (detected by betterleaks) before they are sent to the LLM",
+  "author": { "name": "skpersonal" },
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "description": "redact: replace credentials with [REDACTED-...] and send. block: refuse to send.",
+      "options": ["redact", "block"],
+      "default": "redact"
+    },
+    "failMode": {
+      "type": "string",
+      "title": "When the scan fails",
+      "description": "closed: withhold the text if betterleaks cannot run. open: send it unchecked.",
+      "options": ["closed", "open"],
+      "default": "closed"
+    },
+    "betterleaksPath": {
+      "type": "string",
+      "title": "betterleaks command",
+      "description": "Name or absolute path of the betterleaks binary",
+      "default": "betterleaks"
+    },
+    "configPath": {
+      "type": "string",
+      "title": "betterleaks config file (optional)",
+      "description": "Absolute path of a betterleaks.toml passed with -c. Leave empty for betterleaks' default rules."
+    },
+    "hashKey": {
+      "type": "string",
+      "title": "Key for the placeholder hash (optional)",
+      "description": "Set it to get the same [REDACTED-...] for the same secret across sessions and restarts. Empty: a random key per run.",
+      "sensitive": true
+    },
+    "restoreInToolInput": {
+      "type": "boolean",
+      "title": "Restore placeholders in tool input",
+      "description": "Swap [REDACTED-...] back to the real value in the arguments of tool calls, so commands that use a redacted secret still work.",
+      "default": true
+    }
+  }
+}

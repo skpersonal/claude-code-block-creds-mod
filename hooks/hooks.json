@@ -1,0 +1,4 @@
+{
+  "description": "block-creds hooks module",
+  "modules": ["./register.ts"]
+}

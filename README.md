@@ -1,0 +1,172 @@
+# block-creds
+
+認証情報を含むテキストが LLM に送られる前に、`[REDACTED-xxxxxxxxxxxx]` に置き換える（またはその送信を拒否する）Claude Code の **mod** です。検出は [betterleaks](https://github.com/betterleaks/betterleaks) に任せていて、この mod は検出ルールを持ちません。
+
+動作確認: Claude Code 2.1.287、betterleaks 1.7.4。mods は Claude Code 2.1.287 以降で使えます。
+
+## 何を守るか
+
+| 経路                                                    | フックするイベント  | redact（既定）     | block               |
+| ------------------------------------------------------- | ------------------- | ------------------ | ------------------- |
+| ユーザーのプロンプトと、添付のコンテキスト              | `prompt.submit`     | 置換して送信       | 送信を中止（drop）  |
+| ツールの出力（Read、Bash、MCP、サブエージェントを含む） | `tool.call`         | 結果の文字列を置換 | 結果を破棄して deny |
+| `@file` や CLAUDE.md などエンジンが差し込む本文         | `prompt.attachment` | 置換               | その添付を落とす    |
+
+## 同じ値には同じプレースホルダ
+
+プレースホルダは `HMAC-SHA256(鍵, 秘密値)` の先頭 12 桁の 16 進数です。同じ値は、プロンプトでも `.env` でも別のツールの出力でも同じ `[REDACTED-…]` になるので、モデルは「この 2 か所は同じ値」「こちらは別の値」という文脈を保てます。
+
+- 対応表をディスクに保存しません。値は同じ入力から同じ出力になるように計算するだけです。
+- 鍵はメモリ上の乱数で、mod の読み込みごとに変わります。セッションや再起動をまたいで同じプレースホルダにしたい場合は `hashKey` を設定します。
+- 鍵を使う理由は、素のハッシュだと弱いパスワードなどを辞書攻撃で逆算されうるためです。
+
+## ツール入力での復元
+
+モデルが `[REDACTED-…]` を含むコマンドを書いたとき、`tool.call` の入力の中だけ、この mod が覚えている（メモリ上の）対応で本物の値に戻してから実行します。たとえば `curl -H "Authorization: token [REDACTED-…]"` はそのまま動きます。実行結果に本物の値が出てきても、出力側でまた置換されます。
+
+- 戻せるのは、この mod がその読み込み中に置換した値だけです。未知のプレースホルダはそのまま渡します。
+- この復元により、モデルが指示した先（`curl` の宛先など）へ本物の値が渡ることがあります。それを避けたい場合は `restoreInToolInput` を `false` にします。
+
+## インストール
+
+前提: `betterleaks` が PATH にあること（`brew install betterleaks`、`mise use -g aqua:betterleaks/betterleaks`、`go install github.com/betterleaks/betterleaks/v2@latest` など）。
+
+GitHub リポジトリ `skpersonal/claude-code-block-creds-mod` をマーケットプレイスとして追加し、そこから入れます。
+
+```text
+# Claude Code のセッション内で
+/plugin marketplace add skpersonal/claude-code-block-creds-mod
+/plugin install block-creds@block-creds-marketplace
+```
+
+追加と導入を 1 コマンドにまとめることもできます（Claude Code 2.1.275 以降）。
+
+```text
+/plugin install block-creds --marketplace skpersonal/claude-code-block-creds-mod
+```
+
+セッションを開かずにシェルから入れる場合は次のとおりです。
+
+```bash
+claude plugin marketplace add skpersonal/claude-code-block-creds-mod
+claude plugin install block-creds@block-creds-marketplace            # 既定はユーザースコープ
+claude plugin install block-creds@block-creds-marketplace --scope project   # リポジトリ単位で有効にする場合
+```
+
+- 導入したあと、開いているセッションでは `/reload-plugins` を実行すると読み込まれます。`/plugin` を開き、Installed タブに `block-creds` があれば有効です。
+- タグやブランチに固定する場合は、`skpersonal/claude-code-block-creds-mod#v0.1.0` のように `#ref` を付けます。
+- 更新は `claude plugin update block-creds@block-creds-marketplace`、削除は `claude plugin uninstall block-creds@block-creds-marketplace` です。
+- 手元の clone を 1 セッションだけ試すには `claude --plugin-dir /path/to/claude-code-block-creds-mod` を使います。
+
+## 設定（userConfig）
+
+| 名前                 | 既定値           | 内容                                                                                     |
+| -------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
+| `mode`               | `redact`         | `redact`: 置換して送る。`block`: 送らない                                                |
+| `failMode`           | `closed`         | betterleaks が実行できないとき。`closed`: そのテキストを送らない。`open`: 検査せずに送る |
+| `betterleaksPath`    | `betterleaks`    | 実行ファイルの名前またはパス                                                             |
+| `configPath`         | なし             | betterleaks の設定ファイル（`-c`）。省略すると betterleaks の既定ルール                  |
+| `hashKey`            | なし（ランダム） | プレースホルダ用の鍵。機密扱いで保存される                                               |
+| `restoreInToolInput` | `true`           | ツール入力でプレースホルダを本物の値に戻す                                               |
+
+`/plugin configure block-creds@block-creds-marketplace` で設定できます。
+
+セッション中の件数は `/block-creds` で確認できます。
+
+## 検出ルールを足す
+
+検出は betterleaks の既定ルールのままです。たとえば AWS のアクセスキー ID は、**近く（5 行以内）にシークレットキーがあるときだけ**報告され、ID 単体は報告されません。URL に埋め込まれたパスワード（`postgres://user:pass@host`）も既定では検出されません。足したい場合は、既定を継承した設定ファイルを作って `configPath` に指定します。
+
+```toml
+# betterleaks.toml
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS access key ID, even without the secret"
+regex = '''\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b'''
+keywords = ["a3t", "akia", "asia", "abia", "acca"]
+filter = '''
+entropy(finding["secret"]) <= 3.0
+|| matchesAny(finding["secret"], [`.+EXAMPLE$`])
+'''
+```
+
+## 制限事項
+
+- 画像と PDF の中身は検査しません。
+- システムプロンプト（`prompt.section`、`prompt.context`）は対象外です。
+- mod を読み込む前に会話に入っていた内容（`--resume` した会話の履歴など）は置換しません。
+- 検出精度は betterleaks のルールに依存します。未知の形式は見つかりません。
+- プロンプト、ツール結果、添付のそれぞれで betterleaks を 1 回起動します（1 回約 40 ms）。
+- `--safe-mode`、`--bare`、`disableAllHooks` のときは mod が読み込まれず、何も守られません。
+- tool.call のフックが結果を返せずに失敗した場合は、`.catch` で結果を破棄します（fail closed）。
+
+## 開発
+
+前提: Claude Code 2.1.287 以降、`betterleaks`、Node.js（`npx` で TypeScript を使う）。ビルド工程はなく、Claude Code が `.ts` を直接読み込みます。
+
+### 1. 型定義を生成する（最初と Claude Code を更新した後）
+
+`.claude-plugin/types/` は手で作るものではなく、Claude Code がこの mod を読み込むたびに、インストールされている版に合わせて書き出します（`.gitignore` 済み）。clone した直後は存在しないので、`tsc` の前に一度読み込ませます。
+
+```bash
+claude -p "ok" --plugin-dir . < /dev/null
+ls .claude-plugin/types   # claude-code/ claude-code-tools/ claude-code-mcp/ tsconfig.json
+```
+
+- `claude-code/index.d.ts` が API の正式な定義です（先頭の行に書き出した Claude Code の版が入ります）。イベントの入出力や `$` のメソッドは、Web のドキュメントよりこちらを優先してください。
+- 書き出しのたびに `.claude-plugin/types/tsconfig.json` は上書きされます。そのため、`.ts` の import を許す `allowImportingTsExtensions` は、ルートの `tsconfig.json` 側に置いています。
+
+### 2. 変更ごとに実行する
+
+```bash
+claude plugin validate . --strict   # 登録しているイベントと呼び出す API の一覧を確認
+claude plugin test                  # 単体テストとイベントテスト（betterleaks はスタブ）
+npx -y -p typescript tsc -p .       # 型チェック
+```
+
+- `claude plugin test` はプラグインのディレクトリを受け取る形式で、テストファイルや単体のテストを指定する方法は見つかっていません。全体で 1 秒未満です。
+- `validate` が出す `hooks:` と `calls:` の行に、意図したイベントと API が並んでいるかを見てください。イベント名の綴りミスはここで分かります。
+- イベントテストは `claude-code/testing` を使います。API 呼び出し（`$.process.run` など）のスタブは `{ value }` か `{ deny }` を返し、イベント（`tool.call` など）のスタブはそのイベントの結果をそのまま返します。userConfig の値は `test(名前, { options: { mode: 'block' } }, 本体)` で渡します。
+
+### 3. 実際のセッションで確かめる
+
+スタブのテストでは、結果のスキーマ検証や、実際のセッションがモデルに何を送るかは分かりません（AWS のシークレットキーの取りこぼしは、この確認で見つかりました）。フックの結果を変えたときは、ダミーの認証情報で必ず実行してください。
+
+```bash
+# ダミーの .env を作業ディレクトリの外に作る（アクセスキー ID は [A-Z2-7] の 16 文字、シークレットは 40 文字）
+mkdir -p /tmp/e2e && cd /tmp/e2e
+AK="AKIA$(LC_ALL=C tr -dc 'A-Z2-7' </dev/urandom | head -c16)"
+SK="$(LC_ALL=C tr -dc 'A-Za-z0-9/+' </dev/urandom | head -c40)"
+GH="ghp_$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c36)"
+printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nGITHUB_TOKEN=%s\n' "$AK" "$SK" "$GH" > .env
+
+# 実行して、モデルに渡った内容（stream-json）に値が残っていないか数える
+claude -p "Read .env and tell me every key and token in it, character for character." \
+  --plugin-dir /path/to/claude-code-block-creds-mod --output-format stream-json --verbose \
+  < /dev/null > out.jsonl
+for s in "$AK" "$SK" "$GH"; do grep -c -F "$s" out.jsonl; done   # すべて 0 なら漏れていない
+grep -o '\[REDACTED-[0-9a-f]*\]' out.jsonl | sort | uniq -c       # 同じ値は同じプレースホルダ
+```
+
+確認するとよい経路は 4 つです。Read、Bash の `cat`、プロンプトへの直接貼り付け、`@.env` のメンション。ツール入力での復元は、Claude に「Read した値を使って `printf '%s' <値> > copy.txt` を実行させる」と、`copy.txt` に本物の値が入ることで確かめられます（Bash などの許可には `--allowedTools` が要ります）。
+
+block モードは、設定を `--settings` で渡して確かめました。
+
+```bash
+cat > block-settings.json <<'EOF'
+{"pluginConfigs": {"block-creds@inline": {"options": {"mode": "block"}}, "@inline/block-creds": {"mode": "block"}}}
+EOF
+claude -p "My token is $GH . Say hi." --plugin-dir /path/to/claude-code-block-creds-mod --settings block-settings.json < /dev/null
+# => Prompt dropped by a hook: block-creds: the prompt contains credentials (github-pat), so it was not sent
+```
+
+上の設定には 2 通りのキー表記を両方入れてあり、どちらが効いたかは切り分けていません。
+
+### 4. コードの構成
+
+`hooks/register.ts` が入口です。`$`（mods API）を渡せるのは同じファイル内の関数だけなので（`validate` が検査します）、betterleaks を起動する処理は `register.ts` にあります。純粋なロジックは `redactor.ts`（置換と HMAC）と `scanner.ts`（betterleaks の出力の解釈）に分けてあり、テストから直接 import できます。
+
+betterleaks の出力は入れ子になることがあります。`aws-secret-access-key` は `aws-access-token` の `ComponentSets[].components[]` の中にだけ現れます。`scanner.ts` は全体をたどって `Secret` を集めているので、最上位だけを読む実装に戻さないでください。

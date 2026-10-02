@@ -1,0 +1,12 @@
+{
+  "name": "block-creds-marketplace",
+  "description": "Marketplace for the block-creds mod",
+  "owner": { "name": "skpersonal" },
+  "plugins": [
+    {
+      "name": "block-creds",
+      "source": "./",
+      "description": "Redacts or blocks credentials (detected by betterleaks) before they are sent to the LLM"
+    }
+  ]
+}
