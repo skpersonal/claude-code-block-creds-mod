@@ -32,7 +32,7 @@
     "hashKey": {
       "type": "string",
       "title": "Key for the placeholder hash (optional)",
-      "description": "Key for the [REDACTED-...] hash, so the same secret gets the same placeholder across sessions and restarts. Empty: a random key is generated and saved here on first run.",
+      "description": "Key for the [REDACTED-...] hash, so the same secret gets the same placeholder across sessions and restarts. Empty: a random key is generated on first run and kept in the plugin's own store.",
       "sensitive": true
     },
     "restoreInToolInput": {

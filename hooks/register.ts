@@ -25,8 +25,10 @@ type Ctx = {
   configPath: string | undefined
   restore: boolean
   restoreDisplay: boolean
-  /** A key made because `hashKey` was empty; it is saved to the setting on session start. */
+  /** A key made because `hashKey` was empty; `loadStoredKey` keeps it in the plugin store, or swaps it for the one already there. */
   generatedKey: string | undefined
+  /** Set by the first `loadStoredKey`, so later calls wait for the same work. */
+  keyLoad: Promise<void> | undefined
   redactor: Redactor
   stats: { redacted: number; blocked: number; failures: number; byRule: Map<string, number> }
   version: string | undefined
@@ -50,6 +52,7 @@ function readCtx(options: PluginOptions): Ctx {
     restore: options['restoreInToolInput'] !== false,
     restoreDisplay: options['restoreInDisplay'] !== false,
     generatedKey,
+    keyLoad: undefined,
     redactor: createRedactor(keyBytes(configuredKey ?? generatedKey)),
     stats: { redacted: 0, blocked: 0, failures: 0, byRule: new Map() },
     version: undefined,
@@ -85,6 +88,7 @@ function record(ctx: Ctx, findings: readonly Finding[], kind: 'redacted' | 'bloc
 
 /** Scans the texts and decides what has to happen to them. */
 async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Promise<Verdict> {
+  await loadStoredKey($, ctx)
   const out = await scanTexts($, ctx, texts)
   if (!out.ok) {
     ctx.stats.failures += 1
@@ -147,18 +151,24 @@ async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {
   }
 }
 
-/** Keeps a generated key in the `hashKey` setting so placeholders stay the same after a restart. */
-async function saveGeneratedKey($: EngineInterface, ctx: Ctx): Promise<void> {
-  const value = ctx.generatedKey
-  if (value === undefined) return
-  try {
-    const row = (await $.config.list()).find((r) => r.key.endsWith('.hashKey'))
-    if (row === undefined) throw new Error('no hashKey row')
-    const r = await $.config.set({ key: row.key, value })
-    if (r.deny !== undefined) throw new Error(r.deny)
-  } catch (err) {
-    notify($, 'could not save the generated hashKey, so placeholders change after a restart (' + String(err) + ')')
-  }
+/**
+ * Makes placeholders the same after a restart when `hashKey` is empty: uses the key in the plugin store, or saves the generated one.
+ * (A sensitive `userConfig` row is not in `$.config.list()`, so the setting cannot be written from here.)
+ * It runs before the first scan, so the redactor is swapped while it holds nothing.
+ */
+function loadStoredKey($: EngineInterface, ctx: Ctx): Promise<void> {
+  ctx.keyLoad ??= (async () => {
+    const generated = ctx.generatedKey
+    if (generated === undefined) return
+    try {
+      const stored = await $.store.get('hashKey')
+      if (typeof stored === 'string' && stored !== '') ctx.redactor = createRedactor(keyBytes(stored))
+      else await $.store.set('hashKey', generated)
+    } catch (err) {
+      notify($, 'could not use the saved hashKey, so placeholders change after a restart (' + String(err) + ')')
+    }
+  })()
+  return ctx.keyLoad
 }
 
 const DISPLAY_FIELDS: Record<string, readonly string[]> = {
@@ -186,7 +196,7 @@ export function register(on: On, options: PluginOptions) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'block-creds', description: 'Show what block-creds redacted or blocked in this session' })
     await checkBinary($, ctx)
-    await saveGeneratedKey($, ctx)
+    await loadStoredKey($, ctx)
     return next(e)
   })
 

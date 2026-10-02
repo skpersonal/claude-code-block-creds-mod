@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { createRedactor, keyBytes } from '../hooks/redactor.ts'
 
 const TOKEN = 'ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A'
 const PLACEHOLDER = /\[REDACTED-[0-9a-f]{12}\]/
@@ -226,42 +227,69 @@ test('restoreInDisplay=false keeps placeholders on screen', { options: { restore
   expect(seen[0].text).toBe(placeholder)
 })
 
-test('a generated hashKey is saved on session start, a configured one is not', async ($, on) => {
+test('a generated hashKey is kept in the plugin store on session start', async ($, on) => {
   fakeBetterleaks(on)
   const sets: any[] = []
   on('command.register', (() => ({ value: undefined })) as any)
   on('session.start', () => ({ cwd: '/work' }))
-  on('config.list', (() => ({ value: [{ key: 'block-creds.hashKey', label: 'k', kind: 'text', value: '' }] })) as any)
-  on('config.set', (($: any, e: any) => {
+  on('store.get', (() => ({ value: undefined })) as any)
+  on('store.set', (($: any, e: any) => {
     sets.push(e)
-    return { value: e.value }
+    return { value: undefined }
   }) as any)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
   expect(sets.length).toBe(1)
-  expect(sets[0].key).toBe('block-creds.hashKey')
+  expect(sets[0].key).toBe('hashKey')
   expect(sets[0].value).toMatch(/^[0-9a-f]{64}$/)
 })
 
-test('a configured hashKey is not overwritten', { options: { hashKey: 'my-key' } }, async ($, on) => {
+test('a stored hashKey decides the placeholder and is not overwritten', async ($, on) => {
   fakeBetterleaks(on)
   const sets: any[] = []
+  const sent: string[] = []
   on('command.register', (() => ({ value: undefined })) as any)
   on('session.start', () => ({ cwd: '/work' }))
-  on('config.set', (($: any, e: any) => {
+  on('store.get', (() => ({ value: 'stored-key' })) as any)
+  on('store.set', (($: any, e: any) => {
     sets.push(e)
-    return { value: e.value }
+    return { value: undefined }
+  }) as any)
+  on('prompt.submit', ($: any, e: any) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.prompt.submit({ text: 'token ' + TOKEN, wait: false, origin: ORIGIN })
+  expect(sets.length).toBe(0)
+  const expected = (await createRedactor(keyBytes('stored-key')).mapping([TOKEN]))[0]?.[1]
+  expect(expected).toMatch(PLACEHOLDER)
+  expect(sent[0]).toContain(expected as string)
+})
+
+test('a configured hashKey does not touch the store', { options: { hashKey: 'my-key' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  const calls: string[] = []
+  on('command.register', (() => ({ value: undefined })) as any)
+  on('session.start', () => ({ cwd: '/work' }))
+  on('store.get', (() => {
+    calls.push('get')
+    return { value: undefined }
+  }) as any)
+  on('store.set', (() => {
+    calls.push('set')
+    return { value: undefined }
   }) as any)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  expect(sets.length).toBe(0)
+  expect(calls.length).toBe(0)
 })
 
 test('a failed key save only warns', async ($, on) => {
   const seen = fakeBetterleaks(on)
   on('command.register', (() => ({ value: undefined })) as any)
   on('session.start', () => ({ cwd: '/work' }))
-  on('config.list', (() => ({ deny: 'nope' })) as any)
+  on('store.get', (() => ({ deny: 'nope' })) as any)
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  expect(seen.toasts.some((t) => t.includes('could not save the generated hashKey'))).toBe(true)
+  expect(seen.toasts.some((t) => t.includes('could not use the saved hashKey'))).toBe(true)
 })
 
 test('a new secret redraws old rows, a known one does not', async ($, on) => {
