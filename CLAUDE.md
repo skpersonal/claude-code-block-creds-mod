@@ -25,7 +25,11 @@ claude --plugin-dir . -p "..."      # run the mod for real; --plugin-dir hot-rel
 - `tool.call`: `await next(e)` then rewrite the result (`{ result }` to redact, `{ deny }` to block). A `.catch` handler denies, so a failing hook never lets an unchecked result through (a hook that fails after `next` otherwise leaves the original result in place)
 - `prompt.attachment`: `@file`, CLAUDE.md and similar text the engine injects (`{ text: null }` to drop)
 
-Placeholders are `[REDACTED-<first 12 hex of HMAC-SHA256(key, secret)>]` (`hooks/redactor.ts`), so the same secret maps to the same placeholder everywhere with no stored table. The `Map<placeholder, secret>` in memory is used only to restore real values in `tool.call` input before the tool runs.
+`ui.render` rewrites only what is drawn (`restoreDeep` on the writable props of `DISPLAY_FIELDS`; a rewrite of a read-only prop makes the engine draw the original), so the model still reads placeholders.
+
+Why display-only: no mods hook masks only on send. `turn.step` messages are pinned, and a rewritten response is recorded in the history, so the real value would reach the next request. Secrets are never written to disk, so after `--resume` old rows keep their placeholders until the same secret is met again (`judge()` then calls `$.ui.invalidate('ui.render')`). An empty `hashKey` is generated in `readCtx` and saved with `$.config.set` on `session.start`, so the same secret gets the same placeholder after a restart.
+
+Placeholders are `[REDACTED-<first 12 hex of HMAC-SHA256(key, secret)>]` (`hooks/redactor.ts`), so the same secret maps to the same placeholder everywhere with no stored table. The `Map<placeholder, secret>` in memory is used only to restore real values in `tool.call` input before the tool runs and in `ui.render` props before they are drawn.
 
 Constraints from Claude Code's static analysis (`validate` enforces them):
 
@@ -45,3 +49,6 @@ Constraints from Claude Code's static analysis (`validate` enforces them):
 - Stubs for mods API calls return `{ value }` (or `{ deny }` to make the call reject); stubs for events return the event's own result shape.
 - Unit tests cannot see engine behavior such as result-schema validation or what a real session sends. For changes to hook results, also run a real session with a dummy `.env` (see the README example) and grep the `--output-format stream-json --verbose` output for the secrets.
 - `userConfig` for a `--plugin-dir` session worked via `--settings file.json` with `pluginConfigs` holding both `"block-creds@inline": { "options": { "mode": "block" } }` and `"@inline/block-creds": { "mode": "block" }`. Which of the two keys took effect was not isolated.
+- `on('ui.render', ...)` (like any `on`) must be registered before the test's first `$` call, or it throws `TypeError: on("ui.render") after the test first called $`. Register stubs first, then call `$.tool.call` and so on.
+- The `hashKey` save finds its row with `$.config.list()` and a key ending in `.hashKey`. Whether that matches under `--plugin-dir` (`@inline`) was not verified in a real session; the tests stub `config.list` with `block-creds.hashKey`. Check it with `/plugin configure` after a first run with an empty `hashKey`.
+- `ui.render` only runs in an interactive session; `claude -p` output never goes through it, so the on-screen restore needs a manual check in `claude --plugin-dir .`.

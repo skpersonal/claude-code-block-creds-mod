@@ -99,3 +99,15 @@ test('interpret: clean, findings and every way a scan can fail', () => {
   expect(interpret(0, '{"a":1}', '').ok).toBe(false)
   expect(interpret(1, '[]', '').ok).toBe(false)
 })
+
+test('the same key gives the same placeholder after a restart and restores it', async () => {
+  const key = keyBytes('fixed-key')
+  const first = createRedactor(key)
+  const placeholder = (await first.mapping(['s3cret-value']))[0]![1]
+  const second = createRedactor(keyBytes('fixed-key'))
+  expect(second.restoreDeep(placeholder).changed).toBe(false)
+  const again = (await second.mapping(['s3cret-value']))[0]![1]
+  expect(again).toBe(placeholder)
+  expect(second.restoreDeep(placeholder).value).toBe('s3cret-value')
+  expect(second.known()).toBe(1)
+})

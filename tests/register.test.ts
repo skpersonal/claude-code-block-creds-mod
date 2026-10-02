@@ -181,3 +181,98 @@ test('/block-creds reports what happened', async ($, on) => {
   expect(out.text).toMatch(/github-pat x1/)
   expect(out.text).toMatch(/1\.7\.4/)
 })
+
+// Makes the mod learn TOKEN's placeholder, as a Read result would.
+async function learnPlaceholder($: any, on: any): Promise<string> {
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }))
+  const read: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
+  return read.result.file.content as string
+}
+
+function recordRender(on: any): any[] {
+  const seen: any[] = []
+  on('ui.render', ($: any, e: any) => {
+    seen.push(e.props)
+    return { type: 'engine', ref: 0 }
+  })
+  return seen
+}
+
+test('the screen shows the real value, in text and in nested tool data', async ($, on) => {
+  fakeBetterleaks(on)
+  const seen = recordRender(on)
+  const placeholder = await learnPlaceholder($, on)
+  await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: 'key is ' + placeholder, isFirstOfReply: true } } as any)
+  await $.ui.render({ surface: 'terminal', component: 'ToolResult', requestId: 't1', props: { tool_use_id: 't1', tool: 'Read', output: { file: { content: placeholder } }, isErrored: false } } as any)
+  expect(seen[0].text).toBe('key is ' + TOKEN)
+  expect(seen[0].isFirstOfReply).toBe(true)
+  expect(seen[1].output.file.content).toBe(TOKEN)
+  expect(seen[1].tool).toBe('Read')
+})
+
+test('an unknown placeholder stays as it is on screen', async ($, on) => {
+  fakeBetterleaks(on)
+  const seen = recordRender(on)
+  const unknown = '[REDACTED-000000000000]'
+  await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: unknown, isFirstOfReply: false } } as any)
+  expect(seen[0].text).toBe(unknown)
+})
+
+test('restoreInDisplay=false keeps placeholders on screen', { options: { restoreInDisplay: false } }, async ($, on) => {
+  fakeBetterleaks(on)
+  const seen = recordRender(on)
+  const placeholder = await learnPlaceholder($, on)
+  await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: placeholder, isFirstOfReply: false } } as any)
+  expect(seen[0].text).toBe(placeholder)
+})
+
+test('a generated hashKey is saved on session start, a configured one is not', async ($, on) => {
+  fakeBetterleaks(on)
+  const sets: any[] = []
+  on('command.register', (() => ({ value: undefined })) as any)
+  on('session.start', () => ({ cwd: '/work' }))
+  on('config.list', (() => ({ value: [{ key: 'block-creds.hashKey', label: 'k', kind: 'text', value: '' }] })) as any)
+  on('config.set', (($: any, e: any) => {
+    sets.push(e)
+    return { value: e.value }
+  }) as any)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  expect(sets.length).toBe(1)
+  expect(sets[0].key).toBe('block-creds.hashKey')
+  expect(sets[0].value).toMatch(/^[0-9a-f]{64}$/)
+})
+
+test('a configured hashKey is not overwritten', { options: { hashKey: 'my-key' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  const sets: any[] = []
+  on('command.register', (() => ({ value: undefined })) as any)
+  on('session.start', () => ({ cwd: '/work' }))
+  on('config.set', (($: any, e: any) => {
+    sets.push(e)
+    return { value: e.value }
+  }) as any)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  expect(sets.length).toBe(0)
+})
+
+test('a failed key save only warns', async ($, on) => {
+  const seen = fakeBetterleaks(on)
+  on('command.register', (() => ({ value: undefined })) as any)
+  on('session.start', () => ({ cwd: '/work' }))
+  on('config.list', (() => ({ deny: 'nope' })) as any)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  expect(seen.toasts.some((t) => t.includes('could not save the generated hashKey'))).toBe(true)
+})
+
+test('a new secret redraws old rows, a known one does not', async ($, on) => {
+  fakeBetterleaks(on)
+  let invalidations = 0
+  on('ui.invalidate', (() => {
+    invalidations += 1
+    return { value: undefined }
+  }) as any)
+  on('prompt.submit', ($: any, e: any) => ({ text: e.text }))
+  await $.prompt.submit({ text: 'use ' + TOKEN, wait: false, origin: ORIGIN })
+  await $.prompt.submit({ text: 'again ' + TOKEN, wait: false, origin: ORIGIN })
+  expect(invalidations).toBe(1)
+})

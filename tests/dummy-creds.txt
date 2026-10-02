@@ -1,0 +1,16 @@
+# TEST ONLY: fictional credentials for local scanner testing; not usable.
+# GitHub personal access token
+GITHUB_TOKEN=ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5
+# GitLab personal access token
+GITLAB_TOKEN=glpat-x7Kp2mQ9vR4tY8wZ3nB6
+# Slack bot token
+SLACK_BOT_TOKEN=xoxb-2718281828459-3141592653589-aBcDeFgHiJkLmNoPqRsTuVwX
+# Stripe test-mode secret key
+STRIPE_SECRET_KEY=sk_test_51Hx7Kp2mQ9vR4tY8wZ3nB6aC
+# Google API key
+GOOGLE_API_KEY=AIzaSyD4kQ8mX2vL7pR1tN6wY9zB3cF5hJ0aE_g
+# JWT
+JWT_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+# AWS
+AWS_ACCESS_KEY_ID=AKIAQ3XK7M2PWNR5TJ6Y
+AWS_SECRET_ACCESS_KEY=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

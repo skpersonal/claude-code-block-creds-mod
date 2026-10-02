@@ -42,6 +42,8 @@ export type Redactor = {
   applyDeep<T>(value: T, mapping: Mapping): T
   /** Turns the placeholders this redactor handed out back into the secrets. Memory only. */
   restoreDeep<T>(value: T): { value: T; changed: boolean }
+  /** How many placeholders this redactor can turn back. */
+  known(): number
 }
 
 export function keyBytes(keyText: string | undefined): Uint8Array {
@@ -111,6 +113,7 @@ export function createRedactor(key: Uint8Array): Redactor {
       ) as T
       return { value: restored, changed }
     },
+    known: () => byPlaceholder.size,
   }
 }
 

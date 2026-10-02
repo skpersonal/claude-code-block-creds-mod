@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code'
-import { collectStrings, createRedactor, keyBytes, type Mapping, type Redactor } from './redactor.ts'
+import { collectStrings, createRedactor, keyBytes, toHex, type Mapping, type Redactor } from './redactor.ts'
 import { buildArgv, interpret, MIN_SCAN_LENGTH, type Finding, type ScanOutcome } from './scanner.ts'
 
 const SCAN_TIMEOUT_MS = 15_000
@@ -24,6 +24,9 @@ type Ctx = {
   bin: string
   configPath: string | undefined
   restore: boolean
+  restoreDisplay: boolean
+  /** A key made because `hashKey` was empty; it is saved to the setting on session start. */
+  generatedKey: string | undefined
   redactor: Redactor
   stats: { redacted: number; blocked: number; failures: number; byRule: Map<string, number> }
   version: string | undefined
@@ -37,13 +40,17 @@ type Verdict =
 
 function readCtx(options: PluginOptions): Ctx {
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined)
+  const configuredKey = str(options['hashKey'])
+  const generatedKey = configuredKey === undefined ? toHex(crypto.getRandomValues(new Uint8Array(32))) : undefined
   return {
     mode: options['mode'] === 'block' ? 'block' : 'redact',
     failMode: options['failMode'] === 'open' ? 'open' : 'closed',
     bin: str(options['betterleaksPath']) ?? 'betterleaks',
     configPath: str(options['configPath']),
     restore: options['restoreInToolInput'] !== false,
-    redactor: createRedactor(keyBytes(str(options['hashKey']))),
+    restoreDisplay: options['restoreInDisplay'] !== false,
+    generatedKey,
+    redactor: createRedactor(keyBytes(configuredKey ?? generatedKey)),
     stats: { redacted: 0, blocked: 0, failures: 0, byRule: new Map() },
     version: undefined,
   }
@@ -95,7 +102,16 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
     return { kind: 'block', rules }
   }
   const rules = record(ctx, out.findings, 'redacted')
+  const before = ctx.redactor.known()
   const mapping = await ctx.redactor.mapping(out.findings.map((f) => f.secret))
+  // Rows drawn before this value was known (a resumed session) can show it now.
+  if (ctx.restoreDisplay && ctx.redactor.known() > before) {
+    try {
+      $.ui.invalidate('ui.render')
+    } catch {
+      // Nothing draws here; the verdict still applies.
+    }
+  }
   notify($, 'redacted ' + mapping.length + ' value(s) (' + rules + ')')
   return { kind: 'redact', mapping, rules }
 }
@@ -131,6 +147,29 @@ async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {
   }
 }
 
+/** Keeps a generated key in the `hashKey` setting so placeholders stay the same after a restart. */
+async function saveGeneratedKey($: EngineInterface, ctx: Ctx): Promise<void> {
+  const value = ctx.generatedKey
+  if (value === undefined) return
+  try {
+    const row = (await $.config.list()).find((r) => r.key.endsWith('.hashKey'))
+    if (row === undefined) throw new Error('no hashKey row')
+    const r = await $.config.set({ key: row.key, value })
+    if (r.deny !== undefined) throw new Error(r.deny)
+  } catch (err) {
+    notify($, 'could not save the generated hashKey, so placeholders change after a restart (' + String(err) + ')')
+  }
+}
+
+const DISPLAY_FIELDS: Record<string, readonly string[]> = {
+  AssistantMessage: ['text'],
+  UserMessage: ['text'],
+  ToolUse: ['input', 'output'],
+  ToolResult: ['output'],
+  CommandOutput: ['text'],
+  AskUserQuestion: ['questions'],
+}
+
 function summary(ctx: Ctx): string {
   const rules = [...ctx.stats.byRule].map(([rule, n]) => rule + ' x' + n).join(', ')
   return [
@@ -147,7 +186,23 @@ export function register(on: On, options: PluginOptions) {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'block-creds', description: 'Show what block-creds redacted or blocked in this session' })
     await checkBinary($, ctx)
+    await saveGeneratedKey($, ctx)
     return next(e)
+  })
+
+  // Only the drawing changes; the stored messages, and so what the model reads, keep the placeholders.
+  on('ui.render', ($, e, next) => {
+    const fields = DISPLAY_FIELDS[e.component]
+    if (!ctx.restoreDisplay || fields === undefined) return next(e)
+    const props = e.props as Record<string, unknown>
+    const changed: Record<string, unknown> = {}
+    for (const field of fields) {
+      if (props[field] === undefined) continue
+      const r = ctx.redactor.restoreDeep(props[field])
+      if (r.changed) changed[field] = r.value
+    }
+    if (Object.keys(changed).length === 0) return next(e)
+    return next({ ...e, props: { ...props, ...changed } } as typeof e)
   })
 
   on('command.run', { command: 'block-creds' }, async () => ({ text: summary(ctx) }))

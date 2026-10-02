@@ -32,13 +32,19 @@
     "hashKey": {
       "type": "string",
       "title": "Key for the placeholder hash (optional)",
-      "description": "Set it to get the same [REDACTED-...] for the same secret across sessions and restarts. Empty: a random key per run.",
+      "description": "Key for the [REDACTED-...] hash, so the same secret gets the same placeholder across sessions and restarts. Empty: a random key is generated and saved here on first run.",
       "sensitive": true
     },
     "restoreInToolInput": {
       "type": "boolean",
       "title": "Restore placeholders in tool input",
       "description": "Swap [REDACTED-...] back to the real value in the arguments of tool calls, so commands that use a redacted secret still work.",
+      "default": true
+    },
+    "restoreInDisplay": {
+      "type": "boolean",
+      "title": "Restore placeholders on screen",
+      "description": "Draw the real value in place of [REDACTED-...] in what you see (replies, tool rows). Only the drawing changes; what the model reads keeps the placeholder.",
       "default": true
     }
   }
