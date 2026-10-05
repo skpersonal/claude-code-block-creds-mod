@@ -9,9 +9,11 @@ A Claude Code **mod** (a plugin whose TypeScript hooks run inside Claude Code, v
 ## Commands
 
 ```bash
-claude plugin validate . --strict   # must pass; also lists the hooks and `$` calls static analysis found
+pnpm install                        # once; also enables the husky pre-commit hook (lint-staged, typecheck, test)
+pnpm lint                           # biome check; `pnpm format` applies fixes
+claude plugin validate . --strict   # (`pnpm validate`) must pass; also lists the hooks and `$` calls static analysis found
 claude plugin test                  # all tests (betterleaks is stubbed). It takes a plugin directory, not a test file; no single-test selector was found, and the whole suite runs in under a second
-npx -y -p typescript tsc -p .       # type check (no build step; Claude Code loads .ts directly)
+pnpm typecheck                      # tsc -p .; type check (no build step; Claude Code loads .ts directly)
 claude --plugin-dir . -p "..."      # run the mod for real; --plugin-dir hot-reloads on save
 ```
 

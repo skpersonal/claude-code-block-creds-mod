@@ -1,19 +1,11 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code'
-import { collectStrings, createRedactor, keyBytes, redactionNotice, toHex, type Mapping, type Redactor } from './redactor.ts'
-import { buildArgv, interpret, MIN_SCAN_LENGTH, type Finding, type ScanOutcome } from './scanner.ts'
+import { collectStrings, createRedactor, keyBytes, type Mapping, type Redactor, redactionNotice, toHex } from './redactor.ts'
+import { buildArgv, type Finding, interpret, MIN_SCAN_LENGTH, type ScanOutcome } from './scanner.ts'
 
 const SCAN_TIMEOUT_MS = 15_000
 
 // Attachments the engine writes itself and that never carry file or tool content.
-const SKIP_ATTACHMENTS = new Set([
-  'todo_reminder',
-  'plan_mode',
-  'plan_mode_exit',
-  'auto_mode',
-  'auto_mode_exit',
-  'skill_listing',
-  'deferred_tools_delta',
-])
+const SKIP_ATTACHMENTS = new Set(['todo_reminder', 'plan_mode', 'plan_mode_exit', 'auto_mode', 'auto_mode_exit', 'skill_listing', 'deferred_tools_delta'])
 
 type Mode = 'redact' | 'block'
 type FailMode = 'closed' | 'open'
@@ -177,7 +169,14 @@ async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {
     if (r.exitCode !== 0) throw new Error('exit ' + r.exitCode)
     ctx.version = r.stdout.trim()
   } catch {
-    notify($, ctx, ctx.bin + ' was not found or does not run. Install betterleaks (' + (ctx.failMode === 'closed' ? 'prompts and tool results are withheld until then' : 'nothing is checked until then') + ').')
+    notify(
+      $,
+      ctx,
+      ctx.bin +
+        ' was not found or does not run. Install betterleaks (' +
+        (ctx.failMode === 'closed' ? 'prompts and tool results are withheld until then' : 'nothing is checked until then') +
+        ').',
+    )
   }
 }
 

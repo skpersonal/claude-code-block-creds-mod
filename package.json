@@ -1,0 +1,23 @@
+{
+  "name": "block-creds",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc -p .",
+    "test": "claude plugin test",
+    "validate": "claude plugin validate . --strict",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,json,jsonc}": "biome check --write --no-errors-on-unmatched"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "typescript": "^7.0.2"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

@@ -271,8 +271,18 @@ test('the screen shows the real value, in text and in nested tool data', async (
   fakeBetterleaks(on)
   const seen = recordRender(on)
   const placeholder = await learnPlaceholder($, on)
-  await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: 'key is ' + placeholder, isFirstOfReply: true } } as any)
-  await $.ui.render({ surface: 'terminal', component: 'ToolResult', requestId: 't1', props: { tool_use_id: 't1', tool: 'Read', output: { file: { content: placeholder } }, isErrored: false } } as any)
+  await $.ui.render({
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    requestId: 'm1',
+    props: { text: 'key is ' + placeholder, isFirstOfReply: true },
+  } as any)
+  await $.ui.render({
+    surface: 'terminal',
+    component: 'ToolResult',
+    requestId: 't1',
+    props: { tool_use_id: 't1', tool: 'Read', output: { file: { content: placeholder } }, isErrored: false },
+  } as any)
   expect(seen[0].text).toBe('key is ' + TOKEN)
   expect(seen[0].isFirstOfReply).toBe(true)
   expect(seen[1].output.file.content).toBe(TOKEN)

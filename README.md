@@ -132,7 +132,7 @@ entropy(finding["secret"]) <= 3.0
 
 ## 開発
 
-前提: Claude Code 2.1.287 以降、`betterleaks`、Node.js（`npx` で TypeScript を使う）。ビルド工程はなく、Claude Code が `.ts` を直接読み込みます。
+前提: Claude Code 2.1.287 以降、`betterleaks`、Node.js、pnpm（Biome・TypeScript・husky などの開発用ツール）。ビルド工程はなく、Claude Code が `.ts` を直接読み込みます。
 
 ### 1. 型定義を生成する（最初と Claude Code を更新した後）
 
@@ -149,10 +149,14 @@ ls .claude-plugin/types   # claude-code/ claude-code-tools/ claude-code-mcp/ tsc
 ### 2. 変更ごとに実行する
 
 ```bash
-claude plugin validate . --strict   # 登録しているイベントと呼び出す API の一覧を確認
-claude plugin test                  # 単体テストとイベントテスト（betterleaks はスタブ）
-npx -y -p typescript tsc -p .       # 型チェック
+pnpm validate    # claude plugin validate . --strict。登録しているイベントと呼び出す API の一覧を確認
+pnpm test        # claude plugin test。単体テストとイベントテスト（betterleaks はスタブ）
+pnpm typecheck   # tsc -p .
+pnpm lint        # biome check .（lint と整形の確認）
+pnpm format      # biome check --write .（自動修正）
 ```
+
+最初に `pnpm install` を実行してください（husky が `.husky/` の Git フックを有効にします）。コミット時には pre-commit フックが、ステージしたファイルへの `lint-staged`（Biome の自動修正）、`pnpm typecheck`、`pnpm test` を順に実行します。型チェックには手順 1 の型定義が必要です。
 
 - `claude plugin test` はプラグインのディレクトリを受け取る形式で、テストファイルや単体のテストを指定する方法は見つかっていません。全体で 1 秒未満です。
 - `validate` が出す `hooks:` と `calls:` の行に、意図したイベントと API が並んでいるかを見てください。イベント名の綴りミスはここで分かります。
