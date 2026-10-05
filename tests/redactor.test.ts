@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { createRedactor, hmacSha256, keyBytes, toHex } from '../hooks/redactor.ts'
+import { createRedactor, hmacSha256, keyBytes, redactionNotice, toHex } from '../hooks/redactor.ts'
 import { interpret } from '../hooks/scanner.ts'
 
 const enc = new TextEncoder()
@@ -110,4 +110,21 @@ test('the same key gives the same placeholder after a restart and restores it', 
   expect(again).toBe(placeholder)
   expect(second.restoreDeep(placeholder).value).toBe('s3cret-value')
   expect(second.known()).toBe(1)
+})
+
+test('redactionNotice lists each placeholder with its rules and follows restore', () => {
+  const entries = [
+    { placeholder: '[REDACTED-aaaaaaaaaaaa]', rules: ['github-pat'] },
+    { placeholder: '[REDACTED-bbbbbbbbbbbb]', rules: ['aws-access-token', 'aws-secret-access-key'] },
+  ]
+  const on = redactionNotice(entries, { restoresInToolInput: true, userSeesRealValues: true })
+  expect(on).toContain('[REDACTED-aaaaaaaaaaaa] (github-pat)')
+  expect(on).toContain('[REDACTED-bbbbbbbbbbbb] (aws-access-token, aws-secret-access-key)')
+  expect(on).toContain('swapped for the real value')
+  expect(on).toContain('The user sees the real values on their screen')
+  const off = redactionNotice(entries, { restoresInToolInput: false, userSeesRealValues: false })
+  expect(off).toContain('receive the placeholder text literally')
+  expect(off).not.toContain('swapped for the real value')
+  expect(off).toContain('The user also sees the placeholders')
+  expect(off).not.toContain('sees the real values')
 })

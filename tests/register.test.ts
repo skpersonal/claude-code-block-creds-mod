@@ -37,13 +37,63 @@ test('a prompt with a token is sent with a placeholder instead', async ($, on) =
     return { text: e.text }
   })
   await $.prompt.submit({ text: 'use ' + TOKEN + ' please', context: ['ctx ' + TOKEN], wait: false, origin: ORIGIN })
-  expect(reached.length).toBe(2)
+  // text, the redacted context, and the notice for the model
+  expect(reached.length).toBe(3)
   for (const t of reached) {
     expect(t.includes(TOKEN)).toBe(false)
     expect(t).toMatch(PLACEHOLDER)
   }
   // Same secret, same placeholder, in the text and in the context
   expect(reached[0]?.match(PLACEHOLDER)?.[0]).toBe(reached[1]?.match(PLACEHOLDER)?.[0])
+  expect(reached[2]).toContain('block-creds (a credential filter)')
+  expect(reached[2]).toContain('github-pat')
+})
+
+test('a clean prompt gets no notice', async ($, on) => {
+  fakeBetterleaks(on)
+  const reached: any[] = []
+  on('prompt.submit', ($: any, e: any) => {
+    reached.push(e)
+    return { text: e.text }
+  })
+  await $.prompt.submit({ text: 'list the files in this directory', wait: false, origin: ORIGIN })
+  expect(reached[0].context).toBeUndefined()
+})
+
+test('a redacted tool result carries a notice for the model', async ($, on) => {
+  fakeBetterleaks(on)
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }))
+  const out: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
+  expect(out.context.length).toBe(1)
+  expect(out.context[0]).toContain('block-creds (a credential filter)')
+  expect(out.context[0]).toContain(out.result.file.content)
+  expect(out.context[0]).toContain('github-pat')
+  expect(out.context[0]).toContain('swapped for the real value')
+  expect(out.context[0]).toContain('The user sees the real values on their screen')
+  expect(JSON.stringify(out).includes(TOKEN)).toBe(false)
+})
+
+test('the notice says the user sees placeholders when restoreInDisplay=false', { options: { restoreInDisplay: false } }, async ($, on) => {
+  fakeBetterleaks(on)
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }))
+  const out: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
+  expect(out.context[0]).toContain('The user also sees the placeholders')
+  expect(out.context[0]).not.toContain('sees the real values')
+})
+
+test('the notice says placeholders are literal when restoreInToolInput=false', { options: { restoreInToolInput: false } }, async ($, on) => {
+  fakeBetterleaks(on)
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }))
+  const out: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
+  expect(out.context[0]).toContain('receive the placeholder text literally')
+  expect(out.context[0]).not.toContain('swapped for the real value')
+})
+
+test('a clean tool result gets no notice', async ($, on) => {
+  fakeBetterleaks(on)
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content: 'plain text, nothing secret' } }, text: 'plain text, nothing secret' }))
+  const out: any = await $.tool.call({ tool: 'Read', file_path: '/work/a.txt' })
+  expect(out.context).toBeUndefined()
 })
 
 test('a clean prompt goes through untouched', async ($, on) => {
@@ -153,6 +203,7 @@ test('a failed tool call that printed a token is redacted too', async ($, on) =>
   expect(typeof out.deny).toBe('string')
   expect(out.deny.includes(TOKEN)).toBe(false)
   expect(out.deny).toMatch(PLACEHOLDER)
+  expect(out.deny).toContain('block-creds (a credential filter)')
 })
 
 test('block mode denies a tool result with a token', { options: { mode: 'block' } }, async ($, on) => {
@@ -177,6 +228,7 @@ test('an attachment is redacted, or dropped in block mode', async ($, on) => {
   const out: any = await $.prompt.attachment({ type: 'file', text: 'TOKEN=' + TOKEN, origin: { kind: 'engine' } } as any)
   expect(out.text.includes(TOKEN)).toBe(false)
   expect(out.text).toMatch(PLACEHOLDER)
+  expect(out.text).toContain('block-creds (a credential filter)')
 })
 
 test('block mode drops an attachment with a token', { options: { mode: 'block' } }, async ($, on) => {

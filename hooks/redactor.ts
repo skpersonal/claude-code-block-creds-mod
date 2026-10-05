@@ -117,6 +117,31 @@ export function createRedactor(key: Uint8Array): Redactor {
   }
 }
 
+export type NoticeEntry = { placeholder: string; rules: readonly string[] }
+
+/** What the model reads beside redacted content, so it knows what the placeholders are and how to go on. */
+export type NoticeOptions = {
+  /** Placeholders in tool call arguments are swapped for the real value before the tool runs. */
+  restoresInToolInput: boolean
+  /** The user's screen shows the real values in place of the placeholders. */
+  userSeesRealValues: boolean
+}
+
+export function redactionNotice(entries: readonly NoticeEntry[], opts: NoticeOptions): string {
+  const list = entries.map((e) => e.placeholder + ' (' + e.rules.join(', ') + ')').join(', ')
+  return [
+    'block-creds (a credential filter) replaced credentials in this content with placeholders: ' + list + '.',
+    'The real values are never shown to you; the same value always gets the same placeholder.',
+    opts.userSeesRealValues
+      ? 'The user sees the real values on their screen, so refer to a value by its placeholder and the user will know which one you mean.'
+      : 'The user also sees the placeholders instead of the real values.',
+    opts.restoresInToolInput
+      ? 'You can pass a placeholder as-is in tool call arguments: it is swapped for the real value before the tool runs.'
+      : 'Tool call arguments receive the placeholder text literally, not the real value.',
+    'Continue the task. Do not ask the user for these values or try to recover them.',
+  ].join('\n')
+}
+
 /** Every string inside a value, for scanning a result that has no flattened `text`. */
 export function collectStrings(value: unknown, into: string[] = []): string[] {
   if (typeof value === 'string') into.push(value)

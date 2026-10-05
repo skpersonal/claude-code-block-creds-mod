@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code'
-import { collectStrings, createRedactor, keyBytes, toHex, type Mapping, type Redactor } from './redactor.ts'
+import { collectStrings, createRedactor, keyBytes, redactionNotice, toHex, type Mapping, type Redactor } from './redactor.ts'
 import { buildArgv, interpret, MIN_SCAN_LENGTH, type Finding, type ScanOutcome } from './scanner.ts'
 
 const SCAN_TIMEOUT_MS = 15_000
@@ -38,7 +38,7 @@ type Ctx = {
 
 type Verdict =
   | { kind: 'clean' }
-  | { kind: 'redact'; mapping: Mapping; rules: string }
+  | { kind: 'redact'; mapping: Mapping; rules: string; notice: string }
   | { kind: 'block'; rules: string }
   | { kind: 'error'; error: string }
 
@@ -137,7 +137,17 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
     }
   }
   notify($, ctx, 'redacted ' + mapping.length + ' value(s) (' + rules + ')')
-  return { kind: 'redact', mapping, rules }
+  const rulesOf = new Map<string, Set<string>>()
+  for (const f of out.findings) {
+    const set = rulesOf.get(f.secret) ?? new Set<string>()
+    set.add(f.ruleId)
+    rulesOf.set(f.secret, set)
+  }
+  const notice = redactionNotice(
+    mapping.map(([secret, placeholder]) => ({ placeholder, rules: [...(rulesOf.get(secret) ?? [])] })),
+    { restoresInToolInput: ctx.restore, userSeesRealValues: ctx.restoreDisplay },
+  )
+  return { kind: 'redact', mapping, rules, notice }
 }
 
 /** What the model reads in place of a tool result that held credentials. */
@@ -154,11 +164,11 @@ async function guardResult($: EngineInterface, ctx: Ctx, res: any) {
     return { deny: 'block-creds withheld this tool result because it contains credentials (' + v.rules + '). Do not retry the same call.' }
   }
   if (res.isError === true) {
-    return { deny: typeof res.text === 'string' ? ctx.redactor.applyText(res.text, v.mapping) : 'The tool failed.' }
+    const failure = typeof res.text === 'string' ? ctx.redactor.applyText(res.text, v.mapping) : 'The tool failed.'
+    return { deny: failure + '\n\n' + v.notice }
   }
-  const out: { result: unknown; context?: string[] } = { result: ctx.redactor.applyDeep(res.result, v.mapping) }
-  if (Array.isArray(res.context)) out.context = res.context.map((c: string) => ctx.redactor.applyText(c, v.mapping))
-  return out
+  const redacted: string[] = Array.isArray(res.context) ? res.context.map((c: string) => ctx.redactor.applyText(c, v.mapping)) : []
+  return { result: ctx.redactor.applyDeep(res.result, v.mapping), context: [...redacted, v.notice] }
 }
 
 async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {
@@ -244,8 +254,8 @@ export function register(on: On, options: PluginOptions) {
     if (v.kind === 'error') return { drop: 'block-creds could not check the prompt, so it was not sent (' + v.error + ')' }
     if (v.kind === 'block') return { drop: 'block-creds: the prompt contains credentials (' + v.rules + '), so it was not sent' }
     const text = ctx.redactor.applyText(e.text, v.mapping)
-    if (e.context === undefined) return next({ ...e, text })
-    return next({ ...e, text, context: e.context.map((c) => ctx.redactor.applyText(c, v.mapping)) })
+    const context = [...(e.context ?? []).map((c) => ctx.redactor.applyText(c, v.mapping)), v.notice]
+    return next({ ...e, text, context })
   })
 
   on('prompt.attachment', async ($, e, next) => {
@@ -253,7 +263,7 @@ export function register(on: On, options: PluginOptions) {
     const v = await judge($, ctx, [e.text])
     if (v.kind === 'clean') return next(e)
     if (v.kind === 'error' || v.kind === 'block') return { text: null }
-    return next({ ...e, text: ctx.redactor.applyText(e.text, v.mapping) })
+    return next({ ...e, text: ctx.redactor.applyText(e.text, v.mapping) + '\n\n' + v.notice })
   })
 
   on('tool.call', async ($, e, next) => {
