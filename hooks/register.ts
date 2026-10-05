@@ -31,6 +31,8 @@ type Ctx = {
   keyLoad: Promise<void> | undefined
   redactor: Redactor
   stats: { redacted: number; blocked: number; failures: number; byRule: Map<string, number> }
+  /** Notices since the last prompt was sent; kept on the status line until the next prompt. */
+  notes: string[]
   version: string | undefined
 }
 
@@ -55,6 +57,7 @@ function readCtx(options: PluginOptions): Ctx {
     keyLoad: undefined,
     redactor: createRedactor(keyBytes(configuredKey ?? generatedKey)),
     stats: { redacted: 0, blocked: 0, failures: 0, byRule: new Map() },
+    notes: [],
     version: undefined,
   }
 }
@@ -70,11 +73,28 @@ async function scanTexts($: EngineInterface, ctx: Ctx, texts: readonly string[])
   }
 }
 
-function notify($: EngineInterface, text: string): void {
+/** Shows a toast and keeps the notice on the status line until the next prompt (`clearNotes`). Neither reaches the model. */
+function notify($: EngineInterface, ctx: Ctx, text: string): void {
   try {
     $.ui.toast('block-creds: ' + text)
   } catch {
     // Nothing draws here (for example claude -p); the verdict still applies.
+  }
+  if (!ctx.notes.includes(text)) ctx.notes.push(text)
+  try {
+    $.ui.status('block-creds: ' + ctx.notes.join(' | '))
+  } catch {
+    // Nothing draws here; the verdict still applies.
+  }
+}
+
+function clearNotes($: EngineInterface, ctx: Ctx): void {
+  if (ctx.notes.length === 0) return
+  ctx.notes = []
+  try {
+    $.ui.status(undefined)
+  } catch {
+    // Nothing draws here; the verdict still applies.
   }
 }
 
@@ -93,16 +113,16 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
   if (!out.ok) {
     ctx.stats.failures += 1
     if (ctx.failMode === 'open') {
-      notify($, 'scan failed, sent as is (' + out.error + ')')
+      notify($, ctx, 'scan failed, sent as is (' + out.error + ')')
       return { kind: 'clean' }
     }
-    notify($, 'scan failed, withheld (' + out.error + ')')
+    notify($, ctx, 'scan failed, withheld (' + out.error + ')')
     return { kind: 'error', error: out.error }
   }
   if (out.findings.length === 0) return { kind: 'clean' }
   if (ctx.mode === 'block') {
     const rules = record(ctx, out.findings, 'blocked')
-    notify($, 'blocked (' + rules + ')')
+    notify($, ctx, 'blocked (' + rules + ')')
     return { kind: 'block', rules }
   }
   const rules = record(ctx, out.findings, 'redacted')
@@ -116,7 +136,7 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
       // Nothing draws here; the verdict still applies.
     }
   }
-  notify($, 'redacted ' + mapping.length + ' value(s) (' + rules + ')')
+  notify($, ctx, 'redacted ' + mapping.length + ' value(s) (' + rules + ')')
   return { kind: 'redact', mapping, rules }
 }
 
@@ -147,7 +167,7 @@ async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {
     if (r.exitCode !== 0) throw new Error('exit ' + r.exitCode)
     ctx.version = r.stdout.trim()
   } catch {
-    notify($, ctx.bin + ' was not found or does not run. Install betterleaks (' + (ctx.failMode === 'closed' ? 'prompts and tool results are withheld until then' : 'nothing is checked until then') + ').')
+    notify($, ctx, ctx.bin + ' was not found or does not run. Install betterleaks (' + (ctx.failMode === 'closed' ? 'prompts and tool results are withheld until then' : 'nothing is checked until then') + ').')
   }
 }
 
@@ -165,7 +185,7 @@ function loadStoredKey($: EngineInterface, ctx: Ctx): Promise<void> {
       if (typeof stored === 'string' && stored !== '') ctx.redactor = createRedactor(keyBytes(stored))
       else await $.store.set('hashKey', generated)
     } catch (err) {
-      notify($, 'could not use the saved hashKey, so placeholders change after a restart (' + String(err) + ')')
+      notify($, ctx, 'could not use the saved hashKey, so placeholders change after a restart (' + String(err) + ')')
     }
   })()
   return ctx.keyLoad
@@ -218,6 +238,7 @@ export function register(on: On, options: PluginOptions) {
   on('command.run', { command: 'block-creds' }, async () => ({ text: summary(ctx) }))
 
   on('prompt.submit', async ($, e, next) => {
+    clearNotes($, ctx)
     const v = await judge($, ctx, [e.text, ...(e.context ?? [])])
     if (v.kind === 'clean') return next(e)
     if (v.kind === 'error') return { drop: 'block-creds could not check the prompt, so it was not sent (' + v.error + ')' }

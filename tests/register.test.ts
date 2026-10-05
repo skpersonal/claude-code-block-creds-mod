@@ -5,11 +5,11 @@ const TOKEN = 'ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A'
 const PLACEHOLDER = /\[REDACTED-[0-9a-f]{12}\]/
 const ORIGIN = { kind: 'composer' } as const
 
-type Stubs = { toasts: string[]; scans: number }
+type Stubs = { toasts: string[]; statuses: (string | undefined)[]; scans: number }
 
 // Stands in for betterleaks: it "finds" TOKEN in whatever is piped to it.
 function fakeBetterleaks(on: any, behaviour: 'works' | 'missing' = 'works'): Stubs {
-  const seen: Stubs = { toasts: [], scans: 0 }
+  const seen: Stubs = { toasts: [], statuses: [], scans: 0 }
   on('process.run', ($: any, e: any) => {
     if (behaviour === 'missing') return { deny: 'spawn betterleaks ENOENT' }
     if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '1.7.4\n', stderr: '' } }
@@ -20,6 +20,10 @@ function fakeBetterleaks(on: any, behaviour: 'works' | 'missing' = 'works'): Stu
   })
   on('ui.toast', ($: any, e: any) => {
     seen.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', ($: any, e: any) => {
+    seen.statuses.push(e.text)
     return { value: undefined }
   })
   return seen
@@ -51,6 +55,18 @@ test('a clean prompt goes through untouched', async ($, on) => {
   })
   await $.prompt.submit({ text: 'list the files in this directory', wait: false, origin: ORIGIN })
   expect(reached).toEqual(['list the files in this directory'])
+})
+
+test('the redaction notice stays on the status line until the next prompt', { options: { hashKey: 'test-key' } }, async ($, on) => {
+  const seen = fakeBetterleaks(on)
+  on('prompt.submit', ($: any, e: any) => ({ text: e.text }))
+  await $.prompt.submit({ text: 'use ' + TOKEN + ' please', wait: false, origin: ORIGIN })
+  expect(seen.statuses.length).toBe(1)
+  expect(seen.statuses[0]).toContain('redacted 1 value(s)')
+  expect(seen.statuses[0]?.includes(TOKEN)).toBe(false)
+  await $.prompt.submit({ text: 'list the files in this directory', wait: false, origin: ORIGIN })
+  expect(seen.statuses.length).toBe(2)
+  expect(seen.statuses[1]).toBe(undefined)
 })
 
 test('block mode drops a prompt with a token', { options: { mode: 'block' } }, async ($, on) => {

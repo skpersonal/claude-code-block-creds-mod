@@ -85,6 +85,8 @@ claude plugin install block-creds@block-creds-marketplace --scope project   # �
 
 セッション中の件数は `/block-creds` で確認できます。
 
+置換・ブロック・スキャン失敗のときは、toast に加えて、プロンプト下の status 行に内容を表示します。status 行は次のメッセージを送るまで残ります。どちらもモデルには渡りません。
+
 ## 検出ルールを足す
 
 検出は betterleaks の既定ルールのままです。たとえば AWS のアクセスキー ID は、**近く（5 行以内）にシークレットキーがあるときだけ**報告され、ID 単体は報告されません。URL に埋め込まれたパスワード（`postgres://user:pass@host`）も既定では検出されません。足したい場合は、既定を継承した設定ファイルを作って `configPath` に指定します。
