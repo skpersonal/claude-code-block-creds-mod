@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { createRedactor, hmacSha256, keyBytes, redactionNotice, toHex } from '../hooks/redactor.ts'
+import { appendToLastText, createRedactor, forScan, hmacSha256, keyBytes, redactionNotice, replaceText, toHex } from '../hooks/redactor.ts'
 import { interpret } from '../hooks/scanner.ts'
 
 const enc = new TextEncoder()
@@ -16,6 +16,13 @@ test('hmacSha256 matches RFC 4231 test vectors', async () => {
   expect(toHex(await hmacSha256(bytes(131, 0xaa), enc.encode('Test Using Larger Than Block-Size Key - Hash Key First')))).toBe(
     '60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54',
   )
+})
+
+test('forScan puts bash-mode tags on their own lines and keeps the text between them', () => {
+  const scanned = forScan('<bash-stdout>KEY=abc</bash-stdout><bash-stderr></bash-stderr>')
+  expect(scanned).toContain('\nKEY=abc\n')
+  expect(scanned).not.toMatch(/[^\n]<\//)
+  expect(forScan('no tags here')).toBe('no tags here')
 })
 
 test('the same secret always gets the same placeholder, another secret another one', async () => {
@@ -125,4 +132,16 @@ test('redactionNotice lists each placeholder with its rules and follows restore'
   expect(off).not.toContain('swapped for the real value')
   expect(off).toContain('The user also sees the placeholders')
   expect(off).not.toContain('sees the real values')
+})
+
+test('appendToLastText adds the note to the last text block and keeps the others', () => {
+  const img = { type: 'image' }
+  const out = appendToLastText([{ type: 'text', text: 'a' }, img, { type: 'text', text: 'b' }], 'note')
+  expect(out).toEqual([{ type: 'text', text: 'a' }, img, { type: 'text', text: 'b\n\nnote' }])
+})
+
+test('replaceText keeps one text block and the other blocks', () => {
+  const img = { type: 'image' }
+  const out = replaceText([{ type: 'text', text: 'a' }, img, { type: 'text', text: 'b' }], 'x')
+  expect(out).toEqual([{ type: 'text', text: 'x' }, img])
 })

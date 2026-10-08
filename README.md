@@ -11,6 +11,7 @@
 | ユーザーのプロンプトと、添付のコンテキスト              | `prompt.submit`     | 置換して送信       | 送信を中止（drop）  |
 | ツールの出力（Read、Bash、MCP、サブエージェントを含む） | `tool.call`         | 結果の文字列を置換 | 結果を破棄して deny |
 | `@file` や CLAUDE.md などエンジンが差し込む本文         | `prompt.attachment` | 置換               | その添付を落とす    |
+| `!コマンド`（bash モード）の入力と出力                  | `session.append`    | 置換               | 本文を伏せ文に差し替え |
 
 ## 同じ値には同じプレースホルダ
 
@@ -30,6 +31,7 @@ redact したとき、モデルだけが読む短い注記（英語）を添え�
 | 失敗したツール結果   | 置換後のエラー文の末尾               |
 | プロンプト           | `context` の末尾                     |
 | 添付（`@file` など） | 置換後の本文の末尾                   |
+| `!コマンド`          | 置換後の行の末尾                     |
 
 block とスキャン失敗のときは、これまでどおり拒否の理由を返します。クリーンな入力には何も足しません。
 
@@ -122,14 +124,15 @@ entropy(finding["secret"]) <= 3.0
 ## 制限事項
 
 - 画像と PDF の中身は検査しません。
+- `!コマンド` の行は会話に保存される前に書き換えるだけで、行そのものを拒否できません。block モードや検査失敗のときは、本文を「伏せた」という文に差し替えて保存します。
 - システムプロンプト（`prompt.section`、`prompt.context`）は対象外です。
 - mod を読み込む前に会話に入っていた内容（`--resume` した会話の履歴など）は置換しません。
 - 検出精度は betterleaks のルールに依存します。未知の形式は見つかりません。
 - プロンプト、ツール結果、添付のそれぞれで betterleaks を 1 回起動します（1 回約 40 ms）。
 - `--safe-mode`、`--bare`、`disableAllHooks` のときは mod が読み込まれず、何も守られません。
 - 検査できないときは常に送りません（fail closed。設定で切り替えることはできません）。
-  - betterleaks が起動できない間は、短いテキストも含めてプロンプト・添付・ツール結果をすべて止めます。起動できるようになれば自動で解除されます。
-  - prompt.submit、prompt.attachment、tool.call のフックが失敗した場合（例外や時間切れ）も、`.catch` でそのテキストを破棄します。
+  - betterleaks が起動できない間は、短いテキストも含めてプロンプト・添付・ツール結果・`!コマンド`の行をすべて止めます。起動できるようになれば自動で解除されます。
+  - prompt.submit、prompt.attachment、tool.call、session.append のフックが失敗した場合（例外や時間切れ）も、`.catch` でそのテキストを破棄（session.append は伏せ文に差し替え）します。
 
 ## 開発
 
@@ -202,3 +205,5 @@ claude -p "My token is $GH . Say hi." --plugin-dir /path/to/claude-code-block-cr
 `hooks/register.ts` が入口です。`$`（mods API）を渡せるのは同じファイル内の関数だけなので（`validate` が検査します）、betterleaks を起動する処理は `register.ts` にあります。純粋なロジックは `redactor.ts`（置換と HMAC）と `scanner.ts`（betterleaks の出力の解釈）に分けてあり、テストから直接 import できます。
 
 betterleaks の出力は入れ子になることがあります。`aws-secret-access-key` は `aws-access-token` の `ComponentSets[].components[]` の中にだけ現れます。`scanner.ts` は全体をたどって `Secret` を集めているので、最上位だけを読む実装に戻さないでください。
+
+また、betterleaks は secret の直後に `<` が来ると検出できません（`…Qz</bash-stdout>` は検出されず、`…Qz` の後に改行を挟めば検出されます）。`!cmd` の行は末尾がこの形になるため、`session.append` ではタグの前後に改行を入れたコピーをスキャンし、置換は元のテキストに対して行います（`redactor.ts` の `forScan`）。

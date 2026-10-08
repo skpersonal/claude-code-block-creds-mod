@@ -1,11 +1,25 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code'
-import { collectStrings, createRedactor, keyBytes, type Mapping, type Redactor, redactionNotice, toHex } from './redactor.ts'
+import {
+  appendToLastText,
+  collectStrings,
+  createRedactor,
+  forScan,
+  keyBytes,
+  type Mapping,
+  type Redactor,
+  redactionNotice,
+  replaceText,
+  toHex,
+} from './redactor.ts'
 import { buildArgv, type Finding, interpret, MIN_SCAN_LENGTH, type ScanOutcome } from './scanner.ts'
 
 const SCAN_TIMEOUT_MS = 15_000
 
 // Attachments the engine writes itself and that never carry file or tool content.
 const SKIP_ATTACHMENTS = new Set(['todo_reminder', 'plan_mode', 'plan_mode_exit', 'auto_mode', 'auto_mode_exit', 'skill_listing', 'deferred_tools_delta'])
+
+// Doors checked by `session.append`; the others are covered by the hooks above (the model's own rows are not user data).
+const APPEND_DOORS = new Set<string>(['command'])
 
 type Mode = 'redact' | 'block'
 
@@ -203,6 +217,12 @@ function loadStoredKey($: EngineInterface, ctx: Ctx): Promise<void> {
   return ctx.keyLoad
 }
 
+function withheldRow(v: { kind: 'block'; rules: string } | { kind: 'error'; error: string }): string {
+  return v.kind === 'block'
+    ? 'block-creds withheld this text because it contains credentials (' + v.rules + ').'
+    : 'block-creds could not check this text for credentials, so it was withheld.'
+}
+
 const DISPLAY_FIELDS: Record<string, readonly string[]> = {
   AssistantMessage: ['text'],
   UserMessage: ['text'],
@@ -248,6 +268,26 @@ export function register(on: On, options: PluginOptions) {
   })
 
   on('command.run', { command: 'block-creds' }, async () => ({ text: summary(ctx) }))
+
+  // Rows the engine adds to the conversation by itself: `!cmd` (bash mode) and its output arrive here, not at a tool or a prompt.
+  // A row cannot be refused, so a blocked or unchecked one is stored with its text replaced.
+  on('session.append', async ($, e, next) => {
+    if (!APPEND_DOORS.has(e.door)) return next(e)
+    const v = await judge($, ctx, collectStrings(e.message.content).map(forScan))
+    if (v.kind === 'clean') return next(e)
+    if (v.kind === 'redact') {
+      const content = appendToLastText(ctx.redactor.applyDeep(e.message.content, v.mapping), v.notice)
+      return next({ ...e, message: { ...e.message, content } })
+    }
+    return next({ ...e, message: { ...e.message, content: replaceText(e.message.content, withheldRow(v)) } })
+  }).catch(async ($, e, next) => {
+    // Fail closed: the row is stored, so what could not be checked is replaced rather than left as it is.
+    hookFailed($, ctx, next.error.kind)
+    return next({
+      ...e,
+      message: { ...e.message, content: replaceText(e.message.content, 'block-creds failed while checking this row, so its text was withheld.') },
+    })
+  })
 
   on('prompt.submit', async ($, e, next) => {
     clearNotes($, ctx)

@@ -27,6 +27,8 @@ claude --plugin-dir . -p "..."      # run the mod for real; --plugin-dir hot-rel
 - `tool.call`: `await next(e)` then rewrite the result (`{ result }` to redact, `{ deny }` to block). A `.catch` handler denies, so a failing hook never lets an unchecked result through (a hook that fails after `next` otherwise leaves the original result in place). `prompt.submit` and `prompt.attachment` have the same `.catch`, and `judge()` refuses everything while betterleaks does not run (no `failMode`; always fail closed)
 - `prompt.attachment`: `@file`, CLAUDE.md and similar text the engine injects (`{ text: null }` to drop)
 
+`session.append` (door `command`): the rows the engine appends itself, i.e. `!cmd` (bash mode) as `<bash-input>` / `<bash-stdout>` rows (confirmed in a real session; they bypass `tool.call` and `prompt.submit`). A row cannot be refused, so `block`/`error` verdicts store the row with its text replaced (`withheldRow`), and the `.catch` handler must still call `next` with replaced text (answering without `next` keeps the original row). Only door `command` is scanned: the others are covered above, and scanning every model row would run betterleaks per block.
+
 `ui.render` rewrites only what is drawn (`restoreDeep` on the writable props of `DISPLAY_FIELDS`; a rewrite of a read-only prop makes the engine draw the original), so the model still reads placeholders.
 
 Why display-only: no mods hook masks only on send. `turn.step` messages are pinned, and a rewritten response is recorded in the history, so the real value would reach the next request. Secrets are never written to disk, so after `--resume` old rows keep their placeholders until the same secret is met again (`judge()` then calls `$.ui.invalidate('ui.render')`). An empty `hashKey` is generated in `readCtx` and kept in `$.store` (`loadStoredKey`, run on `session.start` and before the first `judge()` scan), so the same secret gets the same placeholder after a restart.
@@ -44,6 +46,7 @@ Constraints from Claude Code's static analysis (`validate` enforces them):
 - Output is parsed by `scanner.ts:interpret`: exit 0 or 1 with JSON is valid, anything else is a scan error (fail closed by default).
 - Some secrets are only reported **nested** inside another finding (`aws-secret-access-key` under `aws-access-token` → `ComponentSets[].components[]`). `collectFindings` walks the whole tree; reading only top-level `Secret` leaked AWS secret keys in an E2E run.
 - Default rules skip some shapes (standalone AWS key IDs, URL-embedded passwords, ids ending in `EXAMPLE`). Dummy AWS keys for manual checks must match `AKIA[A-Z2-7]{16}` plus a 40-char secret nearby.
+- A secret directly followed by `<` is not detected (`…Qz</bash-stdout>` finds nothing, `…Qz\n</bash-stdout>` does). `!cmd` rows end that way, so `session.append` scans `forScan(text)` (tags on their own lines) and redacts the original text.
 
 ## Testing notes
 

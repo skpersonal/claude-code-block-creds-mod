@@ -15,7 +15,8 @@ function fakeBetterleaks(on: any, initial: 'works' | 'missing' = 'works'): Stubs
     if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '1.7.4\n', stderr: '' } }
     seen.scans += 1
     const stdin: string = e.init?.stdin ?? ''
-    const hits = stdin.includes(TOKEN) ? [{ RuleID: 'github-pat', Secret: TOKEN }] : []
+    // Like the real thing, a secret directly followed by `<` is not found (`…key</bash-stdout>`).
+    const hits = stdin.includes(TOKEN) && !stdin.includes(TOKEN + '<') ? [{ RuleID: 'github-pat', Secret: TOKEN }] : []
     return { value: { exitCode: hits.length > 0 ? 1 : 0, stdout: JSON.stringify(hits), stderr: '' } }
   })
   on('ui.toast', ($: any, e: any) => {
@@ -403,4 +404,52 @@ test('a new secret redraws old rows, a known one does not', async ($, on) => {
   await $.prompt.submit({ text: 'use ' + TOKEN, wait: false, origin: ORIGIN })
   await $.prompt.submit({ text: 'again ' + TOKEN, wait: false, origin: ORIGIN })
   expect(invalidations).toBe(1)
+})
+
+// A `!cmd` row: the engine appends it to the conversation without a tool call or a prompt.
+function bashRow(text: string, door: string = 'command'): any {
+  return {
+    door,
+    origin: { kind: 'unclassified' },
+    uuid: 'row-1',
+    message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+  }
+}
+
+test('bash mode output with a token is stored with a placeholder and a notice', async ($, on) => {
+  fakeBetterleaks(on)
+  const stored: any[] = [((await $.session.append(bashRow('<bash-stdout>GITHUB_TOKEN=' + TOKEN + '</bash-stdout>'))) as any).message]
+  const text: string = stored[0].content[0].text
+  expect(text.includes(TOKEN)).toBe(false)
+  expect(text).toMatch(PLACEHOLDER)
+  expect(text).toContain('block-creds (a credential filter)')
+})
+
+test('bash mode output without a token is stored as it is', async ($, on) => {
+  fakeBetterleaks(on)
+  const stored: any[] = [((await $.session.append(bashRow('<bash-stdout>nothing secret in here</bash-stdout>'))) as any).message]
+  expect(stored[0].content[0].text).toBe('<bash-stdout>nothing secret in here</bash-stdout>')
+})
+
+test('block mode stores bash mode output with a token as a withheld notice', { options: { mode: 'block' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  const stored: any[] = [((await $.session.append(bashRow('<bash-stdout>GITHUB_TOKEN=' + TOKEN + '</bash-stdout>'))) as any).message]
+  const text: string = stored[0].content[0].text
+  expect(text.includes(TOKEN)).toBe(false)
+  expect(text).toContain('withheld')
+})
+
+test('bash mode output that cannot be checked is stored withheld (fail closed)', async ($, on) => {
+  fakeBetterleaks(on, 'missing')
+  const stored: any[] = [((await $.session.append(bashRow('<bash-stdout>GITHUB_TOKEN=' + TOKEN + '</bash-stdout>'))) as any).message]
+  const text: string = stored[0].content[0].text
+  expect(text.includes(TOKEN)).toBe(false)
+  expect(text).toContain('withheld')
+})
+
+test('rows of other doors are not scanned', async ($, on) => {
+  const stub = fakeBetterleaks(on)
+  const stored: any[] = [((await $.session.append(bashRow('GITHUB_TOKEN=' + TOKEN, 'response'))) as any).message]
+  expect(stub.scans).toBe(0)
+  expect(stored[0].content[0].text).toContain(TOKEN)
 })

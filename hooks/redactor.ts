@@ -142,6 +142,40 @@ export function redactionNotice(entries: readonly NoticeEntry[], opts: NoticeOpt
   ].join('\n')
 }
 
+type TextBlock = { type: string; text?: unknown }
+
+/** Sets the text of every text block to `text` and leaves the other blocks alone; with no text block, adds one. */
+export function replaceText<B extends TextBlock>(content: readonly B[], text: string): B[] {
+  if (!content.some((b) => b.type === 'text')) return [...content, { type: 'text', text } as B]
+  let first = true
+  return content.flatMap((b) => {
+    if (b.type !== 'text') return [b]
+    if (!first) return []
+    first = false
+    return [{ ...b, text }]
+  })
+}
+
+/** Adds a note after the last text block's text (a new text block is not safe to add to a stored row). */
+export function appendToLastText<B extends TextBlock>(content: readonly B[], note: string): B[] {
+  const out = [...content]
+  for (let i = out.length - 1; i >= 0; i--) {
+    const b = out[i]
+    if (b?.type === 'text' && typeof b.text === 'string') {
+      out[i] = { ...b, text: b.text + '\n\n' + note }
+      return out
+    }
+  }
+  return out
+}
+
+const BASH_TAG_RE = /<\/?bash-(?:input|stdout|stderr)>/g
+
+/** betterleaks misses a secret directly followed by `<` (e.g. `…key</bash-stdout>`), so scan a copy with the bash-mode tags on their own lines. */
+export function forScan(text: string): string {
+  return text.replace(BASH_TAG_RE, '\n$&\n')
+}
+
 /** Every string inside a value, for scanning a result that has no flattened `text`. */
 export function collectStrings(value: unknown, into: string[] = []): string[] {
   if (typeof value === 'string') into.push(value)
