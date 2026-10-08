@@ -24,7 +24,7 @@ claude --plugin-dir . -p "..."      # run the mod for real; --plugin-dir hot-rel
 `hooks/register.ts` is the entry point (`hooks/hooks.json` points to it). It hooks three paths to the model and runs each text through the same `judge()` (scan, then redact/block/error verdict):
 
 - `prompt.submit`: user prompt and its extra `context` (`drop` to refuse)
-- `tool.call`: `await next(e)` then rewrite the result (`{ result }` to redact, `{ deny }` to block). A `.catch` handler denies, so a failing hook never lets an unchecked result through (a hook that fails after `next` otherwise leaves the original result in place)
+- `tool.call`: `await next(e)` then rewrite the result (`{ result }` to redact, `{ deny }` to block). A `.catch` handler denies, so a failing hook never lets an unchecked result through (a hook that fails after `next` otherwise leaves the original result in place). `prompt.submit` and `prompt.attachment` have the same `.catch`, and `judge()` refuses everything while betterleaks does not run (no `failMode`; always fail closed)
 - `prompt.attachment`: `@file`, CLAUDE.md and similar text the engine injects (`{ text: null }` to drop)
 
 `ui.render` rewrites only what is drawn (`restoreDeep` on the writable props of `DISPLAY_FIELDS`; a rewrite of a read-only prop makes the engine draw the original), so the model still reads placeholders.

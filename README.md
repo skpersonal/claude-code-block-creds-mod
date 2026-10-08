@@ -87,7 +87,6 @@ claude plugin install block-creds@block-creds-marketplace --scope project   # �
 | 名前                 | 既定値           | 内容                                                                                     |
 | -------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
 | `mode`               | `redact`         | `redact`: 置換して送る。`block`: 送らない                                                |
-| `failMode`           | `closed`         | betterleaks が実行できないとき。`closed`: そのテキストを送らない。`open`: 検査せずに送る |
 | `betterleaksPath`    | `betterleaks`    | 実行ファイルの名前またはパス                                                             |
 | `configPath`         | なし             | betterleaks の設定ファイル（`-c`）。省略すると betterleaks の既定ルール                  |
 | `hashKey`            | 初回に自動生成   | プレースホルダ用の鍵。空なら store に自動生成                                               |
@@ -128,7 +127,9 @@ entropy(finding["secret"]) <= 3.0
 - 検出精度は betterleaks のルールに依存します。未知の形式は見つかりません。
 - プロンプト、ツール結果、添付のそれぞれで betterleaks を 1 回起動します（1 回約 40 ms）。
 - `--safe-mode`、`--bare`、`disableAllHooks` のときは mod が読み込まれず、何も守られません。
-- tool.call のフックが結果を返せずに失敗した場合は、`.catch` で結果を破棄します（fail closed）。
+- 検査できないときは常に送りません（fail closed。設定で切り替えることはできません）。
+  - betterleaks が起動できない間は、短いテキストも含めてプロンプト・添付・ツール結果をすべて止めます。起動できるようになれば自動で解除されます。
+  - prompt.submit、prompt.attachment、tool.call のフックが失敗した場合（例外や時間切れ）も、`.catch` でそのテキストを破棄します。
 
 ## 開発
 

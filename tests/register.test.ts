@@ -8,10 +8,10 @@ const ORIGIN = { kind: 'composer' } as const
 type Stubs = { toasts: string[]; statuses: (string | undefined)[]; scans: number }
 
 // Stands in for betterleaks: it "finds" TOKEN in whatever is piped to it.
-function fakeBetterleaks(on: any, behaviour: 'works' | 'missing' = 'works'): Stubs {
-  const seen: Stubs = { toasts: [], statuses: [], scans: 0 }
+function fakeBetterleaks(on: any, initial: 'works' | 'missing' = 'works'): Stubs & { behaviour: 'works' | 'missing' } {
+  const seen = { toasts: [], statuses: [], scans: 0, behaviour: initial } as Stubs & { behaviour: 'works' | 'missing' }
   on('process.run', ($: any, e: any) => {
-    if (behaviour === 'missing') return { deny: 'spawn betterleaks ENOENT' }
+    if (seen.behaviour === 'missing') return { deny: 'spawn betterleaks ENOENT' }
     if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '1.7.4\n', stderr: '' } }
     seen.scans += 1
     const stdin: string = e.init?.stdin ?? ''
@@ -144,15 +144,37 @@ test('when betterleaks cannot run, the prompt is dropped (fail closed)', async (
   expect(reached).toBe(false)
 })
 
-test('when betterleaks cannot run and failMode is open, the prompt is sent as is', { options: { failMode: 'open' } }, async ($, on) => {
+test('while betterleaks cannot run, even a short prompt is dropped', async ($, on) => {
   fakeBetterleaks(on, 'missing')
   const reached: string[] = []
   on('prompt.submit', ($: any, e: any) => {
     reached.push(e.text)
     return { text: e.text }
   })
-  await $.prompt.submit({ text: 'something longer than eight characters', wait: false, origin: ORIGIN })
-  expect(reached).toEqual(['something longer than eight characters'])
+  const out: any = await $.prompt.submit({ text: 'hi', wait: false, origin: ORIGIN })
+  expect(typeof out.drop).toBe('string')
+  expect(reached).toEqual([])
+})
+
+test('while betterleaks cannot run, an attachment is dropped', async ($, on) => {
+  fakeBetterleaks(on, 'missing')
+  on('prompt.attachment', ($: any, e: any) => ({ text: e.text }))
+  const out: any = await $.prompt.attachment({ type: 'file', text: 'hi', origin: { kind: 'engine' } } as any)
+  expect(out.text).toBe(null)
+})
+
+test('sending resumes once betterleaks runs again', async ($, on) => {
+  const stub = fakeBetterleaks(on, 'missing')
+  const reached: string[] = []
+  on('prompt.submit', ($: any, e: any) => {
+    reached.push(e.text)
+    return { text: e.text }
+  })
+  const first: any = await $.prompt.submit({ text: 'hi', wait: false, origin: ORIGIN })
+  expect(typeof first.drop).toBe('string')
+  stub.behaviour = 'works'
+  await $.prompt.submit({ text: 'hi', wait: false, origin: ORIGIN })
+  expect(reached).toEqual(['hi'])
 })
 
 test('a tool result with a token reaches the model with a placeholder, same shape', async ($, on) => {

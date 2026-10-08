@@ -8,11 +8,9 @@ const SCAN_TIMEOUT_MS = 15_000
 const SKIP_ATTACHMENTS = new Set(['todo_reminder', 'plan_mode', 'plan_mode_exit', 'auto_mode', 'auto_mode_exit', 'skill_listing', 'deferred_tools_delta'])
 
 type Mode = 'redact' | 'block'
-type FailMode = 'closed' | 'open'
 
 type Ctx = {
   mode: Mode
-  failMode: FailMode
   bin: string
   configPath: string | undefined
   restore: boolean
@@ -26,6 +24,8 @@ type Ctx = {
   /** Notices since the last prompt was sent; kept on the status line until the next prompt. */
   notes: string[]
   version: string | undefined
+  /** Whether `betterleaks version` ran last time it was checked; `undefined` until the first check. While it is not `true`, nothing is let through. */
+  available: boolean | undefined
 }
 
 type Verdict =
@@ -40,7 +40,6 @@ function readCtx(options: PluginOptions): Ctx {
   const generatedKey = configuredKey === undefined ? toHex(crypto.getRandomValues(new Uint8Array(32))) : undefined
   return {
     mode: options['mode'] === 'block' ? 'block' : 'redact',
-    failMode: options['failMode'] === 'open' ? 'open' : 'closed',
     bin: str(options['betterleaksPath']) ?? 'betterleaks',
     configPath: str(options['configPath']),
     restore: options['restoreInToolInput'] !== false,
@@ -51,6 +50,7 @@ function readCtx(options: PluginOptions): Ctx {
     stats: { redacted: 0, blocked: 0, failures: 0, byRule: new Map() },
     notes: [],
     version: undefined,
+    available: undefined,
   }
 }
 
@@ -80,6 +80,12 @@ function notify($: EngineInterface, ctx: Ctx, text: string): void {
   }
 }
 
+/** The hook itself failed (threw or ran out of budget); its `.catch` withholds the text. */
+function hookFailed($: EngineInterface, ctx: Ctx, kind: string): void {
+  ctx.stats.failures += 1
+  notify($, ctx, 'check failed (' + kind + '), withheld')
+}
+
 function clearNotes($: EngineInterface, ctx: Ctx): void {
   if (ctx.notes.length === 0) return
   ctx.notes = []
@@ -101,13 +107,15 @@ function record(ctx: Ctx, findings: readonly Finding[], kind: 'redacted' | 'bloc
 /** Scans the texts and decides what has to happen to them. */
 async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Promise<Verdict> {
   await loadStoredKey($, ctx)
+  // Without a working betterleaks nothing is checked, so nothing is let through, short texts included.
+  if (ctx.available !== true) await checkBinary($, ctx)
+  if (ctx.available !== true) {
+    ctx.stats.failures += 1
+    return { kind: 'error', error: ctx.bin + ' is not available' }
+  }
   const out = await scanTexts($, ctx, texts)
   if (!out.ok) {
     ctx.stats.failures += 1
-    if (ctx.failMode === 'open') {
-      notify($, ctx, 'scan failed, sent as is (' + out.error + ')')
-      return { kind: 'clean' }
-    }
     notify($, ctx, 'scan failed, withheld (' + out.error + ')')
     return { kind: 'error', error: out.error }
   }
@@ -168,15 +176,10 @@ async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {
     const r = await $.process.run([ctx.bin, 'version'], { timeoutMs: 5_000 })
     if (r.exitCode !== 0) throw new Error('exit ' + r.exitCode)
     ctx.version = r.stdout.trim()
+    ctx.available = true
   } catch {
-    notify(
-      $,
-      ctx,
-      ctx.bin +
-        ' was not found or does not run. Install betterleaks (' +
-        (ctx.failMode === 'closed' ? 'prompts and tool results are withheld until then' : 'nothing is checked until then') +
-        ').',
-    )
+    ctx.available = false
+    notify($, ctx, ctx.bin + ' was not found or does not run. Install betterleaks (prompts and tool results are withheld until then).')
   }
 }
 
@@ -212,7 +215,7 @@ const DISPLAY_FIELDS: Record<string, readonly string[]> = {
 function summary(ctx: Ctx): string {
   const rules = [...ctx.stats.byRule].map(([rule, n]) => rule + ' x' + n).join(', ')
   return [
-    'mode: ' + ctx.mode + ', on scan failure: ' + ctx.failMode,
+    'mode: ' + ctx.mode,
     'betterleaks: ' + ctx.bin + (ctx.version ? ' ' + ctx.version : ' (not checked or not found)') + (ctx.configPath ? ', config ' + ctx.configPath : ''),
     'this session: ' + ctx.stats.redacted + ' redacted, ' + ctx.stats.blocked + ' blocked, ' + ctx.stats.failures + ' scan failures',
     rules ? 'rules hit: ' + rules : 'rules hit: none',
@@ -255,6 +258,10 @@ export function register(on: On, options: PluginOptions) {
     const text = ctx.redactor.applyText(e.text, v.mapping)
     const context = [...(e.context ?? []).map((c) => ctx.redactor.applyText(c, v.mapping)), v.notice]
     return next({ ...e, text, context })
+  }).catch(async ($, _e, next) => {
+    // Fail closed: a prompt this hook could not check must not be sent.
+    hookFailed($, ctx, next.error.kind)
+    return { drop: 'block-creds failed while checking the prompt, so it was not sent.' }
   })
 
   on('prompt.attachment', async ($, e, next) => {
@@ -263,6 +270,9 @@ export function register(on: On, options: PluginOptions) {
     if (v.kind === 'clean') return next(e)
     if (v.kind === 'error' || v.kind === 'block') return { text: null }
     return next({ ...e, text: ctx.redactor.applyText(e.text, v.mapping) + '\n\n' + v.notice })
+  }).catch(async ($, _e, next) => {
+    hookFailed($, ctx, next.error.kind)
+    return { text: null }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -279,8 +289,9 @@ export function register(on: On, options: PluginOptions) {
       }
     }
     return guardResult($, ctx, await next(input))
-  }).catch(async () => ({
+  }).catch(async ($, _e, next) => {
     // Fail closed: a result this hook could not check must not reach the model.
-    deny: 'block-creds failed while checking this tool result, so it was withheld.',
-  }))
+    hookFailed($, ctx, next.error.kind)
+    return { deny: 'block-creds failed while checking this tool result, so it was withheld.' }
+  })
 }
