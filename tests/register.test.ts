@@ -189,6 +189,18 @@ test('a tool result with a token reaches the model with a placeholder, same shap
   expect(out.result.type).toBe('text')
 })
 
+test('a tool result whose secret is not in `result` as found is withheld, not passed through', async ($, on) => {
+  fakeBetterleaks(on)
+  // Like Read: `text` carries line numbers, so a multi-line secret found there is not in `result.file.content` as it is.
+  const content = TOKEN.slice(0, 20) + '\n' + TOKEN.slice(20)
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content } }, text: TOKEN }))
+  const out: any = await $.tool.call({ tool: 'Read', file_path: '/work/key.pem' })
+  expect(typeof out.deny).toBe('string')
+  expect(out.deny).toContain('could not be replaced')
+  expect(out.result).toBe(undefined)
+  expect(JSON.stringify(out).includes(TOKEN.slice(0, 20))).toBe(false)
+})
+
 test('a placeholder in a tool call is turned back into the real value, in memory only', async ($, on) => {
   fakeBetterleaks(on)
   const calls: any[] = []

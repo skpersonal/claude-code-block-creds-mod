@@ -176,6 +176,14 @@ export function forScan(text: string): string {
   return text.replace(BASH_TAG_RE, '\n$&\n')
 }
 
+/**
+ * Whether a redaction cannot be trusted: a secret is in none of the strings it was applied to (it was found in another
+ * form of the same content, so nothing replaced it), or is still in them afterwards.
+ */
+export function unredacted(original: readonly string[], redacted: readonly string[], mapping: Mapping): boolean {
+  return mapping.some(([secret]) => !original.some((s) => s.includes(secret)) || redacted.some((s) => s.includes(secret)))
+}
+
 /** Every string inside a value, for scanning a result that has no flattened `text`. */
 export function collectStrings(value: unknown, into: string[] = []): string[] {
   if (typeof value === 'string') into.push(value)

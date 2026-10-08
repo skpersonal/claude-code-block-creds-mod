@@ -46,6 +46,7 @@ Constraints from Claude Code's static analysis (`validate` enforces them):
 - Output is parsed by `scanner.ts:interpret`: exit 0 or 1 with JSON is valid, anything else is a scan error (fail closed by default).
 - Some secrets are only reported **nested** inside another finding (`aws-secret-access-key` under `aws-access-token` → `ComponentSets[].components[]`). `collectFindings` walks the whole tree; reading only top-level `Secret` leaked AWS secret keys in an E2E run.
 - Default rules skip some shapes (standalone AWS key IDs, URL-embedded passwords, ids ending in `EXAMPLE`). Dummy AWS keys for manual checks must match `AKIA[A-Z2-7]{16}` plus a 40-char secret nearby.
+- Read's `text` has `cat -n` line numbers but `result.file.content` does not, so a multi-line Secret found in `text` (a PEM private key) is in no string of `result`, and `applyDeep` replaces nothing while core maps the untouched `result` for the model. `guardResult` therefore denies when `unredacted()` says a secret was not reached; keep that check.
 - A secret directly followed by `<` is not detected (`…Qz</bash-stdout>` finds nothing, `…Qz\n</bash-stdout>` does). `!cmd` rows end that way, so `session.append` scans `forScan(text)` (tags on their own lines) and redacts the original text.
 
 ## Testing notes

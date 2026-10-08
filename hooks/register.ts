@@ -10,6 +10,7 @@ import {
   redactionNotice,
   replaceText,
   toHex,
+  unredacted,
 } from './redactor.ts'
 import { buildArgv, type Finding, interpret, MIN_SCAN_LENGTH, type ScanOutcome } from './scanner.ts'
 
@@ -181,8 +182,19 @@ async function guardResult($: EngineInterface, ctx: Ctx, res: any) {
     const failure = typeof res.text === 'string' ? ctx.redactor.applyText(res.text, v.mapping) : 'The tool failed.'
     return { deny: failure + '\n\n' + v.notice }
   }
-  const redacted: string[] = Array.isArray(res.context) ? res.context.map((c: string) => ctx.redactor.applyText(c, v.mapping)) : []
-  return { result: ctx.redactor.applyDeep(res.result, v.mapping), context: [...redacted, v.notice] }
+  const context: string[] = Array.isArray(res.context) ? res.context : []
+  const redacted = context.map((c) => ctx.redactor.applyText(c, v.mapping))
+  const result = ctx.redactor.applyDeep(res.result, v.mapping)
+  // The scan read `text` (Read adds line numbers there), but core maps `result` again for the model: a secret that is not
+  // in `result` as found (a multi-line private key) is not replaced, so the result must not go through.
+  if (unredacted([...collectStrings(res.result), ...context], [...collectStrings(result), ...redacted], v.mapping)) {
+    notify($, ctx, 'withheld, could not redact (' + v.rules + ')')
+    return {
+      deny:
+        'block-creds withheld this tool result because it contains credentials (' + v.rules + ') that could not be replaced in it. Do not retry the same call.',
+    }
+  }
+  return { result, context: [...redacted, v.notice] }
 }
 
 async function checkBinary($: EngineInterface, ctx: Ctx): Promise<void> {

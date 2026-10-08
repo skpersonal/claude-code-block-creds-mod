@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { appendToLastText, createRedactor, forScan, hmacSha256, keyBytes, redactionNotice, replaceText, toHex } from '../hooks/redactor.ts'
+import { appendToLastText, createRedactor, forScan, hmacSha256, keyBytes, redactionNotice, replaceText, toHex, unredacted } from '../hooks/redactor.ts'
 import { interpret } from '../hooks/scanner.ts'
 
 const enc = new TextEncoder()
@@ -144,4 +144,16 @@ test('replaceText keeps one text block and the other blocks', () => {
   const img = { type: 'image' }
   const out = replaceText([{ type: 'text', text: 'a' }, img, { type: 'text', text: 'b' }], 'x')
   expect(out).toEqual([{ type: 'text', text: 'x' }, img])
+})
+
+test('unredacted tells when a redaction did not reach every secret', () => {
+  const m = [['secret-value-1', '[REDACTED-000000000000]']] as const
+  // Found and replaced
+  expect(unredacted(['a secret-value-1 b'], ['a [REDACTED-000000000000] b'], m)).toBe(false)
+  // Found in another form (line numbers), so nothing could replace it
+  expect(unredacted(['secret-\nvalue-1'], ['secret-\nvalue-1'], m)).toBe(true)
+  // Still there after the redaction
+  expect(unredacted(['secret-value-1'], ['secret-value-1'], m)).toBe(true)
+  // Nothing to redact
+  expect(unredacted(['plain'], ['plain'], [])).toBe(false)
 })
