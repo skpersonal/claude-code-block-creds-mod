@@ -79,6 +79,16 @@ test('restoreDeep leaves a placeholder it did not hand out alone', () => {
   expect(out.value).toEqual(input)
 })
 
+test('findKnown lists only the secrets this redactor handed out that are in the texts', async () => {
+  const r = createRedactor(keyBytes('k'))
+  const a = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const b = 'ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  expect(r.findKnown([a])).toEqual([])
+  await r.mapping([a, b])
+  expect(r.findKnown(['echo ' + a, 'nothing'])).toEqual([a])
+  expect(r.findKnown(['nothing here'])).toEqual([])
+})
+
 test('interpret: clean, findings and every way a scan can fail', () => {
   expect(interpret(0, '[]', '')).toEqual({ ok: true, findings: [] })
   expect(interpret(1, '[{"RuleID":"github-pat","Secret":"ghp_x"},{"RuleID":"r","Secret":""}]', '')).toEqual({

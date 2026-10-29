@@ -44,6 +44,8 @@ export type Redactor = {
   restoreDeep<T>(value: T): { value: T; changed: boolean }
   /** How many placeholders this redactor can turn back. */
   known(): number
+  /** The secrets it handed placeholders for that occur in these texts, found or not this time (a value restored into a tool and printed bare). */
+  findKnown(texts: readonly string[]): string[]
 }
 
 export function keyBytes(keyText: string | undefined): Uint8Array {
@@ -114,6 +116,7 @@ export function createRedactor(key: Uint8Array): Redactor {
       return { value: restored, changed }
     },
     known: () => byPlaceholder.size,
+    findKnown: (texts) => [...bySecret.keys()].filter((secret) => texts.some((t) => t.includes(secret))),
   }
 }
 

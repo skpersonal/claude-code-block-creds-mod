@@ -22,6 +22,9 @@ const SKIP_ATTACHMENTS = new Set(['todo_reminder', 'plan_mode', 'plan_mode_exit'
 // Doors checked by `session.append`; the others are covered by the hooks above (the model's own rows are not user data).
 const APPEND_DOORS = new Set<string>(['command'])
 
+// Tools whose input another model reads (a subagent's prompt, a message to another agent): placeholders stay in it.
+const RESTORE_SKIP_TOOLS = new Set<string>(['Agent', 'Task', 'SendMessage'])
+
 type Mode = 'redact' | 'block'
 
 type Ctx = {
@@ -134,15 +137,26 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
     notify($, ctx, 'scan failed, withheld (' + out.error + ')')
     return { kind: 'error', error: out.error }
   }
-  if (out.findings.length === 0) return { kind: 'clean' }
+  // A value already redacted once is redacted wherever it shows up again, even where betterleaks no longer sees it.
+  const findings = [...out.findings]
+  for (const secret of ctx.redactor.findKnown(texts)) {
+    if (!findings.some((f) => f.secret === secret)) findings.push({ ruleId: 'known', secret })
+  }
+  if (findings.length === 0) return { kind: 'clean' }
   if (ctx.mode === 'block') {
-    const rules = record(ctx, out.findings, 'blocked')
+    const rules = record(ctx, findings, 'blocked')
     notify($, ctx, 'blocked (' + rules + ')')
     return { kind: 'block', rules }
   }
-  const rules = record(ctx, out.findings, 'redacted')
+  // betterleaks decodes (base64 and the like) and reports the decoded value, which is in no text, so nothing would be replaced.
+  if (findings.some((f) => !texts.some((t) => t.includes(f.secret)))) {
+    const rules = record(ctx, findings, 'blocked')
+    notify($, ctx, 'withheld, could not redact (' + rules + ')')
+    return { kind: 'block', rules }
+  }
+  const rules = record(ctx, findings, 'redacted')
   const before = ctx.redactor.known()
-  const mapping = await ctx.redactor.mapping(out.findings.map((f) => f.secret))
+  const mapping = await ctx.redactor.mapping(findings.map((f) => f.secret))
   // Rows drawn before this value was known (a resumed session) can show it now.
   if (ctx.restoreDisplay && ctx.redactor.known() > before) {
     try {
@@ -153,7 +167,7 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
   }
   notify($, ctx, 'redacted ' + mapping.length + ' value(s) (' + rules + ')')
   const rulesOf = new Map<string, Set<string>>()
-  for (const f of out.findings) {
+  for (const f of findings) {
     const set = rulesOf.get(f.secret) ?? new Set<string>()
     set.add(f.ruleId)
     rulesOf.set(f.secret, set)
@@ -167,7 +181,13 @@ async function judge($: EngineInterface, ctx: Ctx, texts: readonly string[]): Pr
 
 /** What the model reads in place of a tool result that held credentials. */
 async function guardResult($: EngineInterface, ctx: Ctx, res: any) {
-  if (typeof res.deny === 'string') return res
+  // A refusal from beneath (a PreToolUse hook, another plugin) can quote the input, real values restored in it included.
+  if (typeof res.deny === 'string') {
+    const v = await judge($, ctx, [res.deny])
+    if (v.kind === 'clean') return res
+    if (v.kind === 'redact') return { deny: ctx.redactor.applyText(res.deny, v.mapping) + '\n\n' + v.notice }
+    return { deny: 'This tool call was refused; block-creds withheld the reason because it could hold credentials. Do not retry the same call.' }
+  }
   const texts: string[] = typeof res.text === 'string' ? [res.text] : collectStrings(res.result)
   if (Array.isArray(res.context)) texts.push(...res.context)
   const v = await judge($, ctx, texts)
@@ -329,7 +349,7 @@ export function register(on: On, options: PluginOptions) {
 
   on('tool.call', async ($, e, next) => {
     let input: typeof e = e
-    if (ctx.restore) {
+    if (ctx.restore && !RESTORE_SKIP_TOOLS.has(e.tool)) {
       // The model only knows placeholders; the tool needs the real value to work.
       const { tool, tool_use_id, agentId, ...args } = e as Record<string, unknown>
       const restored = ctx.redactor.restoreDeep(args)
@@ -345,5 +365,57 @@ export function register(on: On, options: PluginOptions) {
     // Fail closed: a result this hook could not check must not reach the model.
     hookFailed($, ctx, next.error.kind)
     return { deny: 'block-creds failed while checking this tool result, so it was withheld.' }
+  })
+
+  // The first user message's context blocks: CLAUDE.md (`claudeMd`) and the like. One scan per block, so only the one at fault is withheld.
+  on('prompt.context', async ($, e, next) => {
+    const out = await next(e)
+    const blocks = []
+    for (const block of out.blocks) {
+      const v = await judge($, ctx, [block.text])
+      if (v.kind === 'clean') blocks.push(block)
+      else if (v.kind === 'redact') blocks.push({ ...block, text: ctx.redactor.applyText(block.text, v.mapping) + '\n\n' + v.notice })
+      else blocks.push({ ...block, text: withheldRow(v) })
+    }
+    return { ...out, blocks }
+  }).catch(async ($, _e, next) => {
+    hookFailed($, ctx, next.error.kind)
+    return { blocks: [] }
+  })
+
+  // System prompt sections (`memory` and the like); cached by the engine, so each is scanned once.
+  on('prompt.section', async ($, e, next) => {
+    const out = await next(e)
+    if (out.text === null) return out
+    const v = await judge($, ctx, [out.text])
+    if (v.kind === 'clean') return out
+    if (v.kind === 'redact') return { text: ctx.redactor.applyText(out.text, v.mapping) + '\n\n' + v.notice }
+    return { text: null }
+  }).catch(async ($, _e, next) => {
+    hookFailed($, ctx, next.error.kind)
+    return { text: null }
+  })
+
+  // A skill's prompt as expanded, `!`cmd`` output included.
+  on('skill.prompt', async ($, e, next) => {
+    const out = await next(e)
+    const v = await judge($, ctx, [out.text])
+    if (v.kind === 'clean') return out
+    if (v.kind === 'redact') return { text: ctx.redactor.applyText(out.text, v.mapping) + '\n\n' + v.notice }
+    return { text: withheldRow(v) }
+  }).catch(async ($, _e, next) => {
+    hookFailed($, ctx, next.error.kind)
+    return { text: 'block-creds failed while checking this skill prompt, so it was withheld.' }
+  })
+
+  // Deliveries from outside the conversation: another agent's message, Remote Control, a relay's event.
+  on('session.receive', async ($, e, next) => {
+    const v = await judge($, ctx, [e.text])
+    if (v.kind === 'clean') return next(e)
+    if (v.kind === 'redact') return next({ ...e, text: ctx.redactor.applyText(e.text, v.mapping) + '\n\n' + v.notice })
+    return { consumed: withheldRow(v) }
+  }).catch(async ($, _e, next) => {
+    hookFailed($, ctx, next.error.kind)
+    return { consumed: 'block-creds failed while checking this delivery, so it was withheld.' }
   })
 }

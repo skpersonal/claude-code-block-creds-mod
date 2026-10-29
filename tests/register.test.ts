@@ -465,3 +465,175 @@ test('rows of other doors are not scanned', async ($, on) => {
   expect(stub.scans).toBe(0)
   expect(stored[0].content[0].text).toContain(TOKEN)
 })
+
+// Stands in for betterleaks with its own idea of what is found; `version` always works.
+function scriptedBetterleaks(on: any, find: (stdin: string) => Array<{ RuleID: string; Secret: string }>): void {
+  on('process.run', ($: any, e: any) => {
+    if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '1.9.0\n', stderr: '' } }
+    const hits = find(e.init?.stdin ?? '')
+    return { value: { exitCode: hits.length > 0 ? 1 : 0, stdout: JSON.stringify(hits), stderr: '' } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+}
+
+// Like betterleaks' decoding: the base64 form is found, and the decoded value is what it reports.
+const ENCODED = btoa('token=' + TOKEN)
+const decoding = (stdin: string) => (stdin.includes(ENCODED) ? [{ RuleID: 'github-pat', Secret: TOKEN }] : [])
+
+test('a prompt whose secret was found decoded is dropped, not sent as it is', async ($, on) => {
+  scriptedBetterleaks(on, decoding)
+  let reached = false
+  on('prompt.submit', ($: any, e: any) => {
+    reached = true
+    return { text: e.text }
+  })
+  const out: any = await $.prompt.submit({ text: 'data: ' + ENCODED, wait: false, origin: ORIGIN })
+  expect(typeof out.drop).toBe('string')
+  expect(reached).toBe(false)
+})
+
+test('an attachment whose secret was found decoded is dropped', async ($, on) => {
+  scriptedBetterleaks(on, decoding)
+  on('prompt.attachment', ($: any, e: any) => ({ text: e.text }))
+  const out: any = await $.prompt.attachment({ type: 'file', text: 'data: ' + ENCODED, origin: { kind: 'engine' } } as any)
+  expect(out.text).toBe(null)
+})
+
+test('bash mode output whose secret was found decoded is stored withheld', async ($, on) => {
+  scriptedBetterleaks(on, decoding)
+  const stored: any = ((await $.session.append(bashRow('<bash-stdout>' + ENCODED + '</bash-stdout>'))) as any).message
+  expect(stored.content[0].text.includes(ENCODED)).toBe(false)
+  expect(stored.content[0].text).toContain('withheld')
+})
+
+test('a value redacted once is redacted again where betterleaks no longer finds it', async ($, on) => {
+  // Found only with its variable name in front, as a bare value printed by `echo` is not.
+  scriptedBetterleaks(on, (stdin) => (stdin.includes('GITHUB_TOKEN=' + TOKEN) ? [{ RuleID: 'github-pat', Secret: TOKEN }] : []))
+  on('prompt.submit', ($: any, e: any) => ({ text: e.text }))
+  on('tool.call', () => ({ ref: 1, result: { stdout: TOKEN, stderr: '' }, text: TOKEN }))
+  await $.prompt.submit({ text: 'GITHUB_TOKEN=' + TOKEN, wait: false, origin: ORIGIN })
+  const out: any = await $.tool.call({ tool: 'Bash', command: 'echo $GITHUB_TOKEN' })
+  expect(JSON.stringify(out).includes(TOKEN)).toBe(false)
+  expect(out.result.stdout).toMatch(PLACEHOLDER)
+  expect(out.context[0]).toContain('known')
+})
+
+test('a placeholder in a subagent prompt or a message to another agent stays a placeholder', async ($, on) => {
+  fakeBetterleaks(on)
+  const calls: any[] = []
+  on('tool.call', ($: any, e: any) => {
+    calls.push(e)
+    return { ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }
+  })
+  const read: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
+  const placeholder = read.result.file.content as string
+  await $.tool.call({ tool: 'Agent', description: 'use it', prompt: 'call the API with ' + placeholder } as any)
+  await $.tool.call({ tool: 'SendMessage', to: 'worker', message: 'the key is ' + placeholder } as any)
+  expect(calls[1].prompt).toContain(placeholder)
+  expect(calls[2].message).toContain(placeholder)
+  expect(JSON.stringify(calls.slice(1)).includes(TOKEN)).toBe(false)
+})
+
+test('a refusal from beneath that quotes a token is redacted', async ($, on) => {
+  fakeBetterleaks(on)
+  on('tool.call', () => ({ deny: 'policy refused: curl -H "Authorization: token ' + TOKEN + '"' }))
+  const out: any = await $.tool.call({ tool: 'Bash', command: 'curl' })
+  expect(typeof out.deny).toBe('string')
+  expect(out.deny.includes(TOKEN)).toBe(false)
+  expect(out.deny).toMatch(PLACEHOLDER)
+})
+
+test('a clean refusal from beneath is passed on as it is', async ($, on) => {
+  fakeBetterleaks(on)
+  on('tool.call', () => ({ deny: 'the user refused this call' }))
+  const out: any = await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(out.deny).toBe('the user refused this call')
+})
+
+const CONTEXT_BLOCKS = [
+  { name: 'claudeMd', text: 'Contents of CLAUDE.md:\nGITHUB_TOKEN=' + TOKEN },
+  { name: 'currentDate', text: "Today's date is 2026-10-29." },
+]
+
+test('CLAUDE.md in the context blocks is redacted, the other blocks kept', async ($, on) => {
+  fakeBetterleaks(on)
+  on('prompt.context', () => ({ blocks: CONTEXT_BLOCKS }))
+  const out: any = await $.prompt.context({ blocks: CONTEXT_BLOCKS })
+  expect(JSON.stringify(out).includes(TOKEN)).toBe(false)
+  expect(out.blocks[0].text).toMatch(PLACEHOLDER)
+  expect(out.blocks[0].text).toContain('block-creds (a credential filter)')
+  expect(out.blocks[1]).toEqual(CONTEXT_BLOCKS[1])
+})
+
+test('block mode withholds only the context block with a token', { options: { mode: 'block' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  on('prompt.context', () => ({ blocks: CONTEXT_BLOCKS }))
+  const out: any = await $.prompt.context({ blocks: CONTEXT_BLOCKS })
+  expect(out.blocks[0].text).toContain('withheld')
+  expect(out.blocks[1]).toEqual(CONTEXT_BLOCKS[1])
+})
+
+test('context blocks that cannot be checked are withheld (fail closed)', async ($, on) => {
+  fakeBetterleaks(on, 'missing')
+  on('prompt.context', () => ({ blocks: CONTEXT_BLOCKS }))
+  const out: any = await $.prompt.context({ blocks: CONTEXT_BLOCKS })
+  expect(JSON.stringify(out).includes(TOKEN)).toBe(false)
+  for (const b of out.blocks) expect(b.text).toContain('withheld')
+})
+
+test('a system prompt section with a token is redacted, or left out in block mode', async ($, on) => {
+  fakeBetterleaks(on)
+  on('prompt.section', () => ({ text: 'memory: GITHUB_TOKEN=' + TOKEN }))
+  const out: any = await $.prompt.section({ name: 'memory', text: null })
+  expect(out.text.includes(TOKEN)).toBe(false)
+  expect(out.text).toMatch(PLACEHOLDER)
+})
+
+test('block mode leaves a section with a token out', { options: { mode: 'block' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  on('prompt.section', () => ({ text: 'memory: GITHUB_TOKEN=' + TOKEN }))
+  const out: any = await $.prompt.section({ name: 'memory', text: null })
+  expect(out.text).toBe(null)
+})
+
+test('a skill prompt with a token is redacted', async ($, on) => {
+  fakeBetterleaks(on)
+  on('skill.prompt', () => ({ text: 'env output: GITHUB_TOKEN=' + TOKEN }))
+  const out: any = await $.skill.prompt({ skill: 'deploy', text: '' })
+  expect(out.text.includes(TOKEN)).toBe(false)
+  expect(out.text).toMatch(PLACEHOLDER)
+})
+
+test('a skill prompt that cannot be checked is withheld', async ($, on) => {
+  fakeBetterleaks(on, 'missing')
+  on('skill.prompt', () => ({ text: 'env output: GITHUB_TOKEN=' + TOKEN }))
+  const out: any = await $.skill.prompt({ skill: 'deploy', text: '' })
+  expect(out.text.includes(TOKEN)).toBe(false)
+  expect(out.text).toContain('withheld')
+})
+
+test('a delivery with a token is passed on redacted, or consumed in block mode', async ($, on) => {
+  fakeBetterleaks(on)
+  const reached: string[] = []
+  on('session.receive', ($: any, e: any) => {
+    reached.push(e.text)
+    return { text: e.text }
+  })
+  await $.session.receive({ origin: { kind: 'peer-send-message' }, text: 'the key is ' + TOKEN } as any)
+  expect(reached.length).toBe(1)
+  expect(reached[0]?.includes(TOKEN)).toBe(false)
+  expect(reached[0]).toMatch(PLACEHOLDER)
+})
+
+test('block mode consumes a delivery with a token', { options: { mode: 'block' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  let reached = false
+  on('session.receive', ($: any, e: any) => {
+    reached = true
+    return { text: e.text }
+  })
+  const out: any = await $.session.receive({ origin: { kind: 'peer-send-message' }, text: 'the key is ' + TOKEN } as any)
+  expect(typeof out.consumed).toBe('string')
+  expect(reached).toBe(false)
+})

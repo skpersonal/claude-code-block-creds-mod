@@ -21,11 +21,14 @@ claude --plugin-dir . -p "..."      # run the mod for real; --plugin-dir hot-rel
 
 ## Architecture
 
-`hooks/register.ts` is the entry point (`hooks/hooks.json` points to it). It hooks three paths to the model and runs each text through the same `judge()` (scan, then redact/block/error verdict):
+`hooks/register.ts` is the entry point (`hooks/hooks.json` points to it). It hooks every path it can find to the model and runs each text through the same `judge()` (scan, then redact/block/error verdict):
 
 - `prompt.submit`: user prompt and its extra `context` (`drop` to refuse)
 - `tool.call`: `await next(e)` then rewrite the result (`{ result }` to redact, `{ deny }` to block). A `.catch` handler denies, so a failing hook never lets an unchecked result through (a hook that fails after `next` otherwise leaves the original result in place). `prompt.submit` and `prompt.attachment` have the same `.catch`, and `judge()` refuses everything while betterleaks does not run (no `failMode`; always fail closed)
-- `prompt.attachment`: `@file`, CLAUDE.md and similar text the engine injects (`{ text: null }` to drop)
+- `prompt.attachment`: `@file`, CLAUDE.md and similar text the engine injects (`{ text: null }` to drop). A real session confirmed the root CLAUDE.md arrives here (HEAD before `prompt.context` was hooked already redacted it)
+- `prompt.context` (per block), `prompt.section`, `skill.prompt`, `session.receive` (`{ consumed }` to refuse): the other ways text reaches a model; each wraps `next` and has a `.catch` that withholds
+
+`judge()` adds `ruleId: 'known'` findings for values the redactor already handed placeholders for (`findKnown`), since betterleaks misses a bare value out of context. It turns a redact verdict into `block` when a finding is in none of the texts: betterleaks decodes base64 etc. (`--max-decode-depth`, default 5) and reports the decoded value, so `applyText` would replace nothing. `tool.call` does not restore placeholders for `RESTORE_SKIP_TOOLS` (Agent, Task, SendMessage: another model reads their input), and `guardResult` scans a `{ deny }` from beneath too.
 
 `session.append` (door `command`): the rows the engine appends itself, i.e. `!cmd` (bash mode) as `<bash-input>` / `<bash-stdout>` rows (confirmed in a real session; they bypass `tool.call` and `prompt.submit`). A row cannot be refused, so `block`/`error` verdicts store the row with its text replaced (`withheldRow`), and the `.catch` handler must still call `next` with replaced text (answering without `next` keeps the original row). Only door `command` is scanned: the others are covered above, and scanning every model row would run betterleaks per block.
 
