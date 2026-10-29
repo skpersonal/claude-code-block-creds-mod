@@ -376,11 +376,19 @@ async function doctor($: EngineInterface, ctx: Ctx): Promise<string> {
   } catch {
     // Left as unknown.
   }
+  let ownVersion = 'unknown'
+  try {
+    const manifest = JSON.parse(await $.fs.read($.plugin.root + '/.claude-plugin/plugin.json'))
+    if (typeof manifest.version === 'string') ownVersion = manifest.version
+  } catch {
+    // Left as unknown.
+  }
   const rules = [...ctx.stats.byRule].map(([rule, n]) => rule + ' x' + n).join(', ')
   const lines = [
     ctx.available === true
       ? 'status: checking everything sent to the model'
       : 'status: NOT WORKING, so prompts, tool results and attachments are withheld (nothing unchecked is sent)',
+    'block-creds version: ' + ownVersion + ' (' + $.plugin.root + ')',
     'Claude Code: ' + claudeVersion,
     'betterleaks: ' +
       ctx.bin +

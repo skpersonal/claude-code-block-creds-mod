@@ -161,7 +161,7 @@ claude plugin install block-creds@block-creds-marketplace --config betterleaksPa
 
 ## `/block-creds`
 
-この mod の状態を表示します: Claude Code と betterleaks の版、自己診断の結果、使っているルール、mode と復元の設定、鍵の出どころ、このセッションで置換・ブロックした件数と検出ルール。うまく動いていないときは、直し方と mod を無効にする方法も表示します。betterleaks が動かない間も、このコマンドと `/plugin`、`/reload-plugins`、`/config` などのローカルなコマンドは使えます。
+この mod の状態を表示します: block-creds 自身（と読み込み元のディレクトリ）・Claude Code・betterleaks の版、自己診断の結果、使っているルール、mode と復元の設定、鍵の出どころ、このセッションで置換・ブロックした件数と検出ルール。うまく動いていないときは、直し方と mod を無効にする方法も表示します。betterleaks が動かない間も、このコマンドと `/plugin`、`/reload-plugins`、`/config` などのローカルなコマンドは使えます。
 
 ## トラブルシューティング
 
