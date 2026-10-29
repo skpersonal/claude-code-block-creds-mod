@@ -8,11 +8,32 @@ export type ScanOutcome = { ok: true; findings: Finding[] } | { ok: false; error
 /** Inputs shorter than this cannot hold a credential worth scanning for. */
 export const MIN_SCAN_LENGTH = 8
 
+/**
+ * Where betterleaks runs. It reads `.betterleaks.toml` / `.gitleaks.toml` and `.betterleaksignore` / `.gitleaksignore`
+ * from its working directory (`-i` does not stop that), so a project could weaken the rules or hide findings.
+ */
+export const SCAN_CWD = '/'
+
 export function buildArgv(bin: string, configPath: string | undefined): string[] {
-  const argv = [bin, 'stdin', '--no-banner', '-l', 'error', '-f', 'json', '-r', '-']
+  // `--ignore-gitleaks-allow`: a line marked `gitleaks:allow` or `betterleaks:allow` would otherwise not be scanned.
+  const argv = [bin, 'stdin', '--no-banner', '-l', 'error', '-f', 'json', '-r', '-', '--ignore-gitleaks-allow']
   if (configPath) argv.push('-c', configPath)
   return argv
 }
+
+/** Empties the variables betterleaks reads a config from, so only `-c` (`configPath`) or its default rules apply. */
+export function scanEnv(): Record<string, string> {
+  return { BETTERLEAKS_CONFIG: '', GITLEAKS_CONFIG: '', BETTERLEAKS_CONFIG_TOML: '', GITLEAKS_CONFIG_TOML: '' }
+}
+
+/** A relative path would be read from SCAN_CWD, not from where the person meant. */
+export function isAbsolutePath(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
+}
+
+/** A made-up GitHub token the default rules detect, for the self-test. Split so this file holds no token itself. */
+export const PROBE_SECRET = 'ghp_' + 'aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A'
+export const PROBE_TEXT = 'GITHUB_TOKEN=' + PROBE_SECRET
 
 /**
  * A finding can carry further secrets inside it: `aws-access-token` lists the paired

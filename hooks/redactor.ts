@@ -124,8 +124,8 @@ export type NoticeEntry = { placeholder: string; rules: readonly string[] }
 
 /** What the model reads beside redacted content, so it knows what the placeholders are and how to go on. */
 export type NoticeOptions = {
-  /** Placeholders in tool call arguments are swapped for the real value before the tool runs. */
-  restoresInToolInput: boolean
+  /** The tools whose arguments get the real value back before they run; empty when that is off. */
+  restoreTools: readonly string[]
   /** The user's screen shows the real values in place of the placeholders. */
   userSeesRealValues: boolean
 }
@@ -138,8 +138,10 @@ export function redactionNotice(entries: readonly NoticeEntry[], opts: NoticeOpt
     opts.userSeesRealValues
       ? 'The user sees the real values on their screen, so refer to a value by its placeholder and the user will know which one you mean.'
       : 'The user also sees the placeholders instead of the real values.',
-    opts.restoresInToolInput
-      ? 'You can pass a placeholder as-is in tool call arguments: it is swapped for the real value before the tool runs.'
+    opts.restoreTools.length > 0
+      ? 'You can pass a placeholder as-is in the arguments of ' +
+        opts.restoreTools.join(', ') +
+        ': it is swapped for the real value before the tool runs. Every other tool receives the placeholder text literally.'
       : 'Tool call arguments receive the placeholder text literally, not the real value.',
     'Continue the task. Do not ask the user for these values or try to recover them.',
   ].join('\n')
@@ -172,11 +174,21 @@ export function appendToLastText<B extends TextBlock>(content: readonly B[], not
   return out
 }
 
-const BASH_TAG_RE = /<\/?bash-(?:input|stdout|stderr)>/g
-
-/** betterleaks misses a secret directly followed by `<` (e.g. `…key</bash-stdout>`), so scan a copy with the bash-mode tags on their own lines. */
+/**
+ * betterleaks misses a secret directly followed by `<` (`…key</bash-stdout>`, `<SecretAccessKey>…</SecretAccessKey>`,
+ * `token=…</td>`), so scan a copy with a space before every `<` and after every `>`. Lines stay as they are, so rules
+ * that pair values a few lines apart still match; secrets are replaced in the original text.
+ */
 export function forScan(text: string): string {
-  return text.replace(BASH_TAG_RE, '\n$&\n')
+  return text.replace(/</g, ' <').replace(/>/g, '> ')
+}
+
+/**
+ * Read's text numbers every line (`12\t…`), so a multi-line secret found there carries the numbers of its lines
+ * after the first one. Without them it is the secret as the file, and the tool's `result`, hold it.
+ */
+export function withoutLineNumbers(secret: string): string {
+  return secret.replace(/\n[ \t]*\d+(?:\t|→)/g, '\n')
 }
 
 /**

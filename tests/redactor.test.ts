@@ -1,6 +1,17 @@
 import { expect, test } from 'claude-code/testing'
-import { appendToLastText, createRedactor, forScan, hmacSha256, keyBytes, redactionNotice, replaceText, toHex, unredacted } from '../hooks/redactor.ts'
-import { interpret } from '../hooks/scanner.ts'
+import {
+  appendToLastText,
+  createRedactor,
+  forScan,
+  hmacSha256,
+  keyBytes,
+  redactionNotice,
+  replaceText,
+  toHex,
+  unredacted,
+  withoutLineNumbers,
+} from '../hooks/redactor.ts'
+import { buildArgv, interpret, isAbsolutePath, scanEnv } from '../hooks/scanner.ts'
 
 const enc = new TextEncoder()
 const bytes = (n: number, v: number) => new Uint8Array(n).fill(v)
@@ -18,11 +29,34 @@ test('hmacSha256 matches RFC 4231 test vectors', async () => {
   )
 })
 
-test('forScan puts bash-mode tags on their own lines and keeps the text between them', () => {
-  const scanned = forScan('<bash-stdout>KEY=abc</bash-stdout><bash-stderr></bash-stderr>')
-  expect(scanned).toContain('\nKEY=abc\n')
-  expect(scanned).not.toMatch(/[^\n]<\//)
+test('forScan spaces out every angle bracket and keeps the lines', () => {
+  const scanned = forScan('<bash-stdout>KEY=abc</bash-stdout>\n<SecretAccessKey>xyz</SecretAccessKey>')
+  expect(scanned).toContain(' KEY=abc ')
+  expect(scanned).toContain(' xyz ')
+  expect(scanned).not.toMatch(/[^ ]</)
+  expect(scanned).not.toMatch(/>[^ ]/)
+  expect(scanned.split('\n').length).toBe(2)
   expect(forScan('no tags here')).toBe('no tags here')
+})
+
+test('withoutLineNumbers takes Read line numbers out of a multi-line secret', () => {
+  const numbered = '-----BEGIN PRIVATE KEY-----\n5\tMIIEvAIBADAN\n6\tBgkqhkiG9w0B\n7\t-----END PRIVATE KEY-----'
+  expect(withoutLineNumbers(numbered)).toBe('-----BEGIN PRIVATE KEY-----\nMIIEvAIBADAN\nBgkqhkiG9w0B\n-----END PRIVATE KEY-----')
+  // The older `cat -n` form pads the number
+  expect(withoutLineNumbers('a\n    12\tb')).toBe('a\nb')
+  expect(withoutLineNumbers('ghp_single_line')).toBe('ghp_single_line')
+})
+
+test('betterleaks is run so that allow comments, a project config and config variables change nothing', () => {
+  const argv = buildArgv('betterleaks', undefined)
+  expect(argv).toContain('--ignore-gitleaks-allow')
+  expect(argv.includes('-c')).toBe(false)
+  expect(buildArgv('betterleaks', '/etc/bl.toml').slice(-2)).toEqual(['-c', '/etc/bl.toml'])
+  expect(scanEnv()).toEqual({ BETTERLEAKS_CONFIG: '', GITLEAKS_CONFIG: '', BETTERLEAKS_CONFIG_TOML: '', GITLEAKS_CONFIG_TOML: '' })
+  expect(isAbsolutePath('/etc/bl.toml')).toBe(true)
+  expect(isAbsolutePath('C:\\bl.toml')).toBe(true)
+  expect(isAbsolutePath('~/bl.toml')).toBe(false)
+  expect(isAbsolutePath('bl.toml')).toBe(false)
 })
 
 test('the same secret always gets the same placeholder, another secret another one', async () => {
@@ -132,12 +166,13 @@ test('redactionNotice lists each placeholder with its rules and follows restore'
     { placeholder: '[REDACTED-aaaaaaaaaaaa]', rules: ['github-pat'] },
     { placeholder: '[REDACTED-bbbbbbbbbbbb]', rules: ['aws-access-token', 'aws-secret-access-key'] },
   ]
-  const on = redactionNotice(entries, { restoresInToolInput: true, userSeesRealValues: true })
+  const on = redactionNotice(entries, { restoreTools: ['Bash', 'Edit'], userSeesRealValues: true })
   expect(on).toContain('[REDACTED-aaaaaaaaaaaa] (github-pat)')
   expect(on).toContain('[REDACTED-bbbbbbbbbbbb] (aws-access-token, aws-secret-access-key)')
-  expect(on).toContain('swapped for the real value')
+  expect(on).toContain('arguments of Bash, Edit: it is swapped for the real value')
+  expect(on).toContain('Every other tool receives the placeholder text literally')
   expect(on).toContain('The user sees the real values on their screen')
-  const off = redactionNotice(entries, { restoresInToolInput: false, userSeesRealValues: false })
+  const off = redactionNotice(entries, { restoreTools: [], userSeesRealValues: false })
   expect(off).toContain('receive the placeholder text literally')
   expect(off).not.toContain('swapped for the real value')
   expect(off).toContain('The user also sees the placeholders')

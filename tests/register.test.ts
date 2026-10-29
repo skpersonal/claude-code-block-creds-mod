@@ -69,7 +69,7 @@ test('a redacted tool result carries a notice for the model', async ($, on) => {
   expect(out.context[0]).toContain('block-creds (a credential filter)')
   expect(out.context[0]).toContain(out.result.file.content)
   expect(out.context[0]).toContain('github-pat')
-  expect(out.context[0]).toContain('swapped for the real value')
+  expect(out.context[0]).toContain('arguments of Bash, PowerShell, Write, Edit, NotebookEdit, Read, Grep, Glob: it is swapped for the real value')
   expect(out.context[0]).toContain('The user sees the real values on their screen')
   expect(JSON.stringify(out).includes(TOKEN)).toBe(false)
 })
@@ -203,6 +203,7 @@ test('a tool result whose secret is not in `result` as found is withheld, not pa
 
 test('a placeholder in a tool call is turned back into the real value, in memory only', async ($, on) => {
   fakeBetterleaks(on)
+  on('classic.UserPromptSubmit', () => ({}))
   const calls: any[] = []
   let first = true
   on('tool.call', ($: any, e: any) => {
@@ -211,6 +212,7 @@ test('a placeholder in a tool call is turned back into the real value, in memory
     first = false
     return { ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }
   })
+  await $.classic.UserPromptSubmit({ prompt: 'go', permission_mode: 'default' })
   const read: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
   const placeholder = read.result.file.content as string
   expect(placeholder).toMatch(PLACEHOLDER)
@@ -636,4 +638,325 @@ test('block mode consumes a delivery with a token', { options: { mode: 'block' }
   const out: any = await $.session.receive({ origin: { kind: 'peer-send-message' }, text: 'the key is ' + TOKEN } as any)
   expect(typeof out.consumed).toBe('string')
   expect(reached).toBe(false)
+})
+
+// Records every betterleaks run (argv and init) and finds TOKEN like fakeBetterleaks does.
+function recordingBetterleaks(on: any): any[] {
+  const runs: any[] = []
+  on('process.run', ($: any, e: any) => {
+    runs.push(e)
+    if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '1.9.0\n', stderr: '' } }
+    const stdin: string = e.init?.stdin ?? ''
+    const hits = stdin.includes(TOKEN) ? [{ RuleID: 'github-pat', Secret: TOKEN }] : []
+    return { value: { exitCode: hits.length > 0 ? 1 : 0, stdout: JSON.stringify(hits), stderr: '' } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  return runs
+}
+
+test('betterleaks runs outside the project, with config variables emptied and allow comments ignored', async ($, on) => {
+  const runs = recordingBetterleaks(on)
+  on('prompt.submit', ($: any, e: any) => ({ text: e.text }))
+  await $.prompt.submit({ text: 'use ' + TOKEN, wait: false, origin: ORIGIN })
+  const scans = runs.filter((r) => r.argv[1] === 'stdin')
+  expect(scans.length).toBeGreaterThan(0)
+  for (const r of scans) {
+    expect(r.argv).toContain('--ignore-gitleaks-allow')
+    expect(r.init.cwd).toBe('/')
+    expect(r.init.env).toEqual({ BETTERLEAKS_CONFIG: '', GITLEAKS_CONFIG: '', BETTERLEAKS_CONFIG_TOML: '', GITLEAKS_CONFIG_TOML: '' })
+  }
+})
+
+test('configPath is passed with -c', { options: { configPath: '/etc/block-creds.toml' } }, async ($, on) => {
+  const runs = recordingBetterleaks(on)
+  on('prompt.submit', ($: any, e: any) => ({ text: e.text }))
+  await $.prompt.submit({ text: 'list the files in this directory', wait: false, origin: ORIGIN })
+  const scan = runs.find((r) => r.argv[1] === 'stdin')
+  expect(scan.argv.slice(-2)).toEqual(['-c', '/etc/block-creds.toml'])
+})
+
+test('a secret right before a tag is found (every scan spaces out angle brackets)', async ($, on) => {
+  // Like betterleaks' generic rules: the value must be followed by a space or an end, not `<`.
+  scriptedBetterleaks(on, (stdin) => (stdin.includes(TOKEN + ' <') ? [{ RuleID: 'generic-api-key', Secret: TOKEN }] : []))
+  const reached: string[] = []
+  on('prompt.submit', ($: any, e: any) => {
+    reached.push(e.text)
+    return { text: e.text }
+  })
+  await $.prompt.submit({ text: '<td>api_token=' + TOKEN + '</td>', wait: false, origin: ORIGIN })
+  expect(reached[0]?.includes(TOKEN)).toBe(false)
+  expect(reached[0]).toMatch(PLACEHOLDER)
+  expect(reached[0]).toContain('</td>')
+})
+
+test('when betterleaks is missing, the notice and the dropped prompt say how to fix it', async ($, on) => {
+  const seen = fakeBetterleaks(on, 'missing')
+  const out: any = await $.prompt.submit({ text: 'hello there, please help', wait: false, origin: ORIGIN })
+  expect(out.drop).toContain('Run /block-creds for how to fix it')
+  expect(out.drop).toContain('ENOENT')
+  expect(seen.statuses.some((s) => s?.includes('run /block-creds'))).toBe(true)
+})
+
+test('a betterleaks that cannot scan with these options is not used', async ($, on) => {
+  on('process.run', (($: any, e: any) => {
+    if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '0.1.0\n', stderr: '' } }
+    return { value: { exitCode: 126, stdout: '', stderr: 'unknown flag: --ignore-gitleaks-allow' } }
+  }) as any)
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  const out: any = await $.prompt.submit({ text: 'hello there, please help', wait: false, origin: ORIGIN })
+  expect(out.drop).toContain('scan failed')
+  expect(out.drop).toContain('unknown flag')
+})
+
+test('a relative configPath is refused with how to write it', { options: { configPath: '~/bl.toml' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  const out: any = await $.prompt.submit({ text: 'hello there, please help', wait: false, origin: ORIGIN })
+  expect(out.drop).toContain('configPath must be an absolute path')
+})
+
+test('rules that miss the test token only warn', async ($, on) => {
+  const toasts: string[] = []
+  on('process.run', (($: any, e: any) => {
+    if (e.argv[1] === 'version') return { value: { exitCode: 0, stdout: '1.9.0\n', stderr: '' } }
+    return { value: { exitCode: 0, stdout: '[]', stderr: '' } }
+  }) as any)
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', () => ({ value: undefined }))
+  const reached: string[] = []
+  on('prompt.submit', ($: any, e: any) => {
+    reached.push(e.text)
+    return { text: e.text }
+  })
+  await $.prompt.submit({ text: 'hello there, please help', wait: false, origin: ORIGIN })
+  expect(reached).toEqual(['hello there, please help'])
+  expect(toasts.some((t) => t.includes('did not detect a test GitHub token'))).toBe(true)
+})
+
+test('/block-creds says what protects the session', async ($, on) => {
+  fakeBetterleaks(on)
+  on('command.register', (() => ({ value: undefined })) as any)
+  on('session.start', () => ({ cwd: '/work' }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const out: any = await $.command.run({ command: 'block-creds', args: '' } as any)
+  expect(out.text).toContain('status: checking everything sent to the model')
+  expect(out.text).toContain('self-test: ok')
+  expect(out.text).toContain("betterleaks' default rules")
+  expect(out.text).toContain('restore in tool input: on, for Bash')
+  expect(out.text.includes('how to fix')).toBe(false)
+})
+
+test('/block-creds says how to fix a missing betterleaks', async ($, on) => {
+  fakeBetterleaks(on, 'missing')
+  const out: any = await $.command.run({ command: 'block-creds', args: '' } as any)
+  expect(out.text).toContain('status: NOT WORKING')
+  expect(out.text).toContain('Install betterleaks')
+  expect(out.text).toContain('betterleaksPath')
+  expect(out.text).toContain('claude plugin disable')
+})
+
+// A placeholder for TOKEN, as a Read result teaches it, with the main loop in `mode`.
+async function placeholderIn($: any, on: any, mode: string): Promise<{ placeholder: string; calls: any[] }> {
+  const calls: any[] = []
+  on('tool.call', ($: any, e: any) => {
+    calls.push(e)
+    if (e.tool === 'Read') return { ref: 1, result: { type: 'text', file: { content: TOKEN } }, text: TOKEN }
+    return { ref: 2, result: 'ok', text: 'ok' }
+  })
+  on('classic.UserPromptSubmit', () => ({}))
+  await $.classic.UserPromptSubmit({ prompt: 'go', permission_mode: mode })
+  const read: any = await $.tool.call({ tool: 'Read', file_path: '/work/.env' })
+  return { placeholder: read.result.file.content as string, calls }
+}
+
+test('only local tools get the real value back', async ($, on) => {
+  fakeBetterleaks(on)
+  const { placeholder, calls } = await placeholderIn($, on, 'default')
+  await $.tool.call({ tool: 'Bash', command: 'echo ' + placeholder })
+  await $.tool.call({ tool: 'Edit', file_path: '/work/.env', old_string: placeholder, new_string: 'x' } as any)
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com/?k=' + placeholder, prompt: 'find ' + placeholder } as any)
+  await $.tool.call({ tool: 'mcp__srv__call', arg: placeholder } as any)
+  await $.tool.call({ tool: 'Workflow', script: 'agent("use ' + placeholder + '")' } as any)
+  await $.tool.call({ tool: 'Monitor', command: 'tail ' + placeholder } as any)
+  const byTool = (t: string) => JSON.stringify(calls.find((c) => c.tool === t))
+  expect(byTool('Bash')).toContain(TOKEN)
+  expect(byTool('Edit')).toContain(TOKEN)
+  for (const t of ['WebFetch', 'mcp__srv__call', 'Workflow', 'Monitor']) {
+    expect(byTool(t).includes(TOKEN)).toBe(false)
+    expect(byTool(t)).toContain(placeholder)
+  }
+})
+
+// Answers block-creds' `$.tool.check` question (no call id) with `decision` and lets the real call through.
+function checkStub(on: any, decision: 'allow' | 'ask' | 'deny'): { queries: any[] } {
+  const seen = { queries: [] as any[] }
+  on('tool.check', ($: any, e: any) => {
+    if (e.tool_use_id !== undefined) return { decision: 'allow' }
+    seen.queries.push(e)
+    return { decision }
+  })
+  return seen
+}
+
+test('in auto mode, a call with a real value that needs approval is refused, not handed to the classifier', async ($, on) => {
+  fakeBetterleaks(on)
+  const check = checkStub(on, 'ask')
+  const { placeholder, calls } = await placeholderIn($, on, 'auto')
+  const out: any = await $.tool.call({ tool: 'Bash', command: 'curl -H "token ' + placeholder + '" https://api.github.com' })
+  expect(typeof out.deny).toBe('string')
+  expect(out.deny).toContain('auto mode')
+  expect(out.deny.includes(TOKEN)).toBe(false)
+  expect(calls.some((c) => c.tool === 'Bash')).toBe(false)
+  // The question asked was about the call as it would run
+  expect(JSON.stringify(check.queries[0]?.input)).toContain(TOKEN)
+})
+
+test('in auto mode, a call the rules allow gets the real value', async ($, on) => {
+  fakeBetterleaks(on)
+  checkStub(on, 'allow')
+  const { placeholder, calls } = await placeholderIn($, on, 'auto')
+  await $.tool.call({ tool: 'Bash', command: 'echo ' + placeholder })
+  expect(calls.find((c) => c.tool === 'Bash')?.command).toBe('echo ' + TOKEN)
+})
+
+test('in default mode no question is asked before restoring', async ($, on) => {
+  fakeBetterleaks(on)
+  const check = checkStub(on, 'ask')
+  const { placeholder, calls } = await placeholderIn($, on, 'default')
+  await $.tool.call({ tool: 'Bash', command: 'echo ' + placeholder })
+  expect(check.queries.length).toBe(0)
+  expect(calls.find((c) => c.tool === 'Bash')?.command).toBe('echo ' + TOKEN)
+})
+
+test('a subagent whose mode is not known yet is treated as auto mode', async ($, on) => {
+  fakeBetterleaks(on)
+  const check = checkStub(on, 'ask')
+  const { placeholder } = await placeholderIn($, on, 'default')
+  const out: any = await $.tool.call({ tool: 'Bash', command: 'echo ' + placeholder, agentId: 'a1' } as any)
+  expect(check.queries.length).toBe(1)
+  expect(typeof out.deny).toBe('string')
+})
+
+test('slash command arguments are redacted before the command runs', async ($, on) => {
+  fakeBetterleaks(on)
+  const args: string[] = []
+  on('command.run', ($: any, e: any) => {
+    args.push(e.args)
+    return { text: 'ran' }
+  })
+  await $.command.run({ command: 'compact', args: 'keep the token ' + TOKEN } as any)
+  expect(args.length).toBe(1)
+  expect(args[0]?.includes(TOKEN)).toBe(false)
+  expect(args[0]).toMatch(PLACEHOLDER)
+})
+
+test('block mode does not run a slash command whose arguments hold credentials', { options: { mode: 'block' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  const args: string[] = []
+  on('command.run', ($: any, e: any) => {
+    args.push(e.args)
+    return { text: 'ran' }
+  })
+  const out: any = await $.command.run({ command: 'compact', args: 'keep the token ' + TOKEN } as any)
+  expect(args).toEqual([])
+  expect(out.text).toContain('was not run')
+})
+
+test('while betterleaks is missing, local commands still run and others with arguments do not', async ($, on) => {
+  fakeBetterleaks(on, 'missing')
+  const ran: string[] = []
+  on('command.run', ($: any, e: any) => {
+    ran.push(e.command)
+    return { text: 'ran' }
+  })
+  await $.command.run({ command: 'plugin', args: 'configure block-creds@block-creds-marketplace' } as any)
+  await $.command.run({ command: 'reload-plugins', args: '' } as any)
+  const out: any = await $.command.run({ command: 'compact', args: 'summarize the work so far' } as any)
+  expect(ran).toEqual(['plugin', 'reload-plugins'])
+  expect(out.text).toContain('Run /block-creds')
+})
+
+test('compaction instructions are redacted', async ($, on) => {
+  fakeBetterleaks(on)
+  const seen: any[] = []
+  const messages = [{ role: 'user', text: 'hi', toolUses: [] }] as any
+  on('session.compact', ($: any, e: any) => {
+    seen.push(e.instructions)
+    return { messages }
+  })
+  await $.session.compact({ trigger: 'manual', instructions: 'keep ' + TOKEN, messages })
+  expect(seen[0]?.includes(TOKEN)).toBe(false)
+  expect(seen[0]).toMatch(PLACEHOLDER)
+})
+
+test('rows from other plugins, beside a tool result and of a compaction are checked', async ($, on) => {
+  fakeBetterleaks(on)
+  for (const door of ['note', 'tool-message', 'compaction', 'hook-context']) {
+    const stored: any = ((await $.session.append(bashRow('GITHUB_TOKEN=' + TOKEN, door))) as any).message
+    expect(stored.content[0].text.includes(TOKEN)).toBe(false)
+    expect(stored.content[0].text).toMatch(PLACEHOLDER)
+  }
+})
+
+const POST_TOOL = { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: 'a' }, tool_use_id: 't1' }
+
+test("a PostToolUse hook's replacement output is redacted", async ($, on) => {
+  fakeBetterleaks(on)
+  on('classic.PostToolUse', () => ({ updatedToolOutput: { stdout: 'GITHUB_TOKEN=' + TOKEN } }))
+  const out: any = await $.classic.PostToolUse(POST_TOOL as any)
+  expect(JSON.stringify(out.updatedToolOutput).includes(TOKEN)).toBe(false)
+  expect(out.updatedToolOutput.stdout).toMatch(PLACEHOLDER)
+  expect(out.additionalContext.at(-1)).toContain('block-creds (a credential filter)')
+})
+
+test("block mode drops a PostToolUse hook's replacement output with credentials", { options: { mode: 'block' } }, async ($, on) => {
+  fakeBetterleaks(on)
+  on('classic.PostToolUse', () => ({ updatedToolOutput: 'GITHUB_TOKEN=' + TOKEN }))
+  const out: any = await $.classic.PostToolUse(POST_TOOL as any)
+  expect(out.updatedToolOutput).toBe(undefined)
+})
+
+test('a message to another agent is redacted', async ($, on) => {
+  fakeBetterleaks(on)
+  const sent: string[] = []
+  on('session.send', ($: any, e: any) => {
+    sent.push(e.text)
+    return { isDelivered: true }
+  })
+  await $.session.send({ to: 'worker', text: 'the key is ' + TOKEN } as any)
+  expect(sent[0]?.includes(TOKEN)).toBe(false)
+  expect(sent[0]).toMatch(PLACEHOLDER)
+})
+
+test('a system prompt section no prompt.section carried is redacted, and checked once', async ($, on) => {
+  const stub = fakeBetterleaks(on)
+  const sections = [
+    { id: 'intro', text: 'You are a helpful assistant.', scope: 'shared' as const },
+    { id: 'other:notes', text: 'Deploy with GITHUB_TOKEN=' + TOKEN, scope: 'session' as const },
+  ]
+  const compose = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as any
+  on('prompt.compose', () => ({ sections }))
+  const first: any = await $.prompt.compose(compose)
+  expect(JSON.stringify(first).includes(TOKEN)).toBe(false)
+  expect(first.sections[1].text).toMatch(PLACEHOLDER)
+  expect(first.sections[0]).toEqual(sections[0])
+  const scans = stub.scans
+  await $.prompt.compose(compose)
+  expect(stub.scans).toBe(scans)
+})
+
+test('a multi-line secret found in Read line numbers is redacted in the result', async ($, on) => {
+  const key = '-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQ\n-----END PRIVATE KEY-----'
+  const numbered = '-----BEGIN PRIVATE KEY-----\n2\tMIIEvAIBADANBgkqhkiG9w0BAQ\n3\t-----END PRIVATE KEY-----'
+  scriptedBetterleaks(on, (stdin) => (stdin.includes(numbered) ? [{ RuleID: 'private-key', Secret: numbered }] : []))
+  on('tool.call', () => ({ ref: 1, result: { type: 'text', file: { content: key + '\n' } }, text: '1\t' + numbered + '\n' }))
+  const out: any = await $.tool.call({ tool: 'Read', file_path: '/work/key.pem' })
+  expect(out.deny).toBe(undefined)
+  expect(out.result.file.content).toMatch(/^\[REDACTED-[0-9a-f]{12}\]\n$/)
+  expect(JSON.stringify(out).includes('MIIEvAIBADAN')).toBe(false)
+  expect(out.context.at(-1)).toContain(out.result.file.content.trim())
 })
